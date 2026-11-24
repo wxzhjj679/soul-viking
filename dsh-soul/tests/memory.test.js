@@ -1,0 +1,525 @@
+/**
+ * 记忆引擎测试：node tests/memory.test.js，退出码 0 = 全过。
+ *
+ * 只测纯函数，不碰 ~/.dsh（存档那一段用系统临时目录）。
+ * 重点覆盖「会静默出错」的地方：正则状态、保护规则、预算裁剪、压缩豁免。
+ */
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  CLARITY_ORDER,
+  DAY_MS,
+  addRecord,
+  applyDecay,
+  compactCard,
+  createCard,
+  daysSince,
+  emotionScore,
+  forgetRecord,
+  loadCard,
+  makeArchiver,
+  normalizeConfig,
+  recall,
+  recallArchived,
+  redact,
+  renderCard,
+  renderRecalledBlock,
+  saveCard,
+  scoreRecord,
+  setPinned,
+  status,
+  targetClarity,
+  touchRecords
+} from '../lib/memory.js'
+
+/**
+ * 2026-11-01 补：这个文件原来**没有隔离 DSH_HOME**。
+ *
+ * env.js 的 note() 是「调用时才读 DSH_HOME」的，所以这里只要在跑用例之前把它
+ * 指到临时目录就够了。没有这一步的后果是真的：每次跑测试都会往
+ * ~/.dsh/agents/soul.log 里灌一万多字节的「第 N 条普通记忆」「压缩动 N 条」，
+ * 把用户真实的排障日志冲得找不到北。
+ */
+process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'soul-memory-test-'))
+
+let passed = 0
+let failed = 0
+function ok(condition, name) {
+  if (condition) {
+    passed += 1
+    console.log(`  ✓ ${name}`)
+  } else {
+    failed += 1
+    console.error(`  ✗ ${name}`)
+  }
+}
+function eq(actual, expected, name) {
+  const same = JSON.stringify(actual) === JSON.stringify(expected)
+  ok(same, `${name}${same ? '' : `（实际 ${JSON.stringify(actual)}，期望 ${JSON.stringify(expected)}）`}`)
+}
+
+const cfg = normalizeConfig({})
+const DAY = DAY_MS
+
+console.log('打分：')
+{
+  const owner = scoreRecord({ text: '树树说下次一起把补历史功能补完', isOwner: true, isPrivate: true })
+  ok(owner.importance >= 60, `主人的约定分够高（${owner.importance}）`)
+  ok(owner.tags.includes('owner') && owner.tags.includes('promise'), '标签带 owner + promise')
+  ok(owner.reasons.length > 0, '给了加分理由（设置页要能解释）')
+
+  const noise = scoreRecord({ text: '嗯' })
+  eq(noise.importance, 0, '「嗯」这种不给分')
+
+  const plain = scoreRecord({ text: '随手记了一条无关紧要的消息内容' })
+  ok(plain.importance < 20, `普通句子低分（${plain.importance}）`)
+
+  const manual = scoreRecord({ text: '随便什么内容都行', importance: 88 })
+  eq(manual.importance, 88, '手动指定优先')
+
+  const emo = scoreRecord({ text: '我好难过，真的很委屈，想哭' })
+  ok(emo.importance > plain.importance, '情绪浓度会加分')
+  ok(emo.tags.includes('emotional'), '情绪高的打 emotional 标签')
+}
+
+console.log('情绪与脱敏：')
+{
+  ok(emotionScore('谢谢你，真的很感动') > 0, '强情绪词能识别')
+  eq(emotionScore('今天下午三点开会'), 0, '普通句子情绪分 0')
+  ok(emotionScore('开心开心开心') <= 24, '情绪分有上限')
+
+  ok(redact('我的 key 是 sk-abcdefgh12345').includes('[密钥]'), '密钥被抹掉')
+  ok(redact('手机号 13812345678 记一下').includes('[手机号]'), '手机号被抹掉')
+  ok(redact('看这个 https://example.com/a?b=1 挺好').includes('[链接]'), '链接被抹掉')
+  // QQ 号：桥接消息的前缀里带（「（QQ 私聊·用户本人 QQ 3472302240）」），
+  // 不脱敏的话账号会原样写进记忆卡，再跟着注入一起发出去
+  ok(redact('（QQ 私聊·用户本人 QQ 3472302240）你好').includes('[QQ号]'), 'QQ 号被抹掉')
+  ok(!redact('（QQ 私聊·用户本人 QQ 3472302240）你好').includes('3472302240'), 'QQ 号不残留明文')
+  ok(!redact('普通的一句话不该被改动').includes('['), '普通文本不被误伤')
+}
+
+console.log('定档与衰减：')
+{
+  const now = Date.now()
+  const fresh = { createdAt: new Date(now - 1 * DAY).toISOString(), lastSeenAt: new Date(now).toISOString(), importance: 30, clarity: 'vivid' }
+  eq(targetClarity(fresh, cfg, now), 'clear', '1 天前、重要度 30 → 清楚（近期加成）')
+
+  const old = { createdAt: new Date(now - 100 * DAY).toISOString(), lastSeenAt: new Date(now - 100 * DAY).toISOString(), importance: 20, clarity: 'clear' }
+  eq(targetClarity(old, cfg, now), 'forgotten', '100 天前、重要度 20 → 遗忘')
+
+  const pinned = { ...old, pinned: true }
+  eq(targetClarity(pinned, cfg, now), 'vivid', 'pinned 永远清晰')
+
+  const ownerFact = { ...old, importance: 30, tags: ['owner', 'fact'] }
+  ok(['clear', 'fuzzy'].includes(targetClarity(ownerFact, cfg, now)), `主人的长期事实不会遗忘（${targetClarity(ownerFact, cfg, now)}）`)
+
+  // 2026-10-29：永久保护的判据从 self（宽 SELF_RE：我觉得/我在/我会…）改成了 fact
+  // （FACT_RE：目标是/专业是/想当/习惯用…）。只带 self 的一次性感受不该拿到豁免，
+  // 不然「我觉得有点累」这类会永久占位，压缩时还删不掉。
+  const oneOffFeeling = { ...old, importance: 30, tags: ['owner', 'self'] }
+  eq(targetClarity(oneOffFeeling, cfg, now), 'forgotten', '只有 self 标签（一次性感受）照常遗忘')
+
+  const first = { ...old, importance: 20, tags: ['first'] }
+  ok(['clear', 'fuzzy'].includes(targetClarity(first, cfg, now)), '「第一次」类的事不会遗忘')
+
+  const groupFriend = { ...old, importance: 20, tags: ['self'] }
+  eq(targetClarity(groupFriend, cfg, now), 'forgotten', '没有 owner 的 self 标签不受保护（群友的自称不该永久留着）')
+}
+
+console.log('衰减过程（一天一档）：')
+{
+  const now = Date.now()
+  const card = createCard('global')
+  const t0 = now - 60 * DAY
+  const r = addRecord(card, { text: '一条普通的记录，内容足够长可以入卡', source: 'test' }, cfg, t0)
+  r.record.clarity = 'vivid'
+  const one = applyDecay(card, cfg, t0 + DAY, { force: true, steps: 1 })
+  eq(r.record.clarity, 'clear', '一天只降一档')
+  ok(one.changed === true, '报告了变化')
+
+  const sameDay = applyDecay(card, cfg, t0 + DAY, { force: false })
+  eq(sameDay.changed, false, '同一天再跑不重复降档')
+
+  // 补跑：关了一周
+  // ⚠️ 日期必须按【本地】取，不能用 toISOString()（那是 UTC 日期）：
+  // daysSince 是把 'YYYY-MM-DD' 当本地午夜解析的（生产侧的 dateKey 也是本地口径），
+  // 混着用会在 UTC+8 的凌晨 0~8 点差一天 —— 表现为「补跑天数」测试时好时坏。
+  const ymdLocal = (ts) => {
+    const d = new Date(ts)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+  eq(daysSince(ymdLocal(t0 + DAY), t0 + 8 * DAY), 7, '补跑天数算对了')
+  eq(daysSince(null, now), 1, '没有记录时按 1 天')
+  eq(daysSince('2000-01-01', now), 30, '补跑有 30 天上限')
+}
+
+console.log('写入与去重：')
+{
+  const now = Date.now()
+  const card = createCard('global')
+  const first = addRecord(card, { text: '树树喜欢喝冰美式', isOwner: true, source: 'tool' }, cfg, now)
+  ok(first.ok === true && first.deduped !== true, '第一次写入成功')
+  eq(card.records.length, 1, '卡里一条')
+
+  const again = addRecord(card, { text: '树树喜欢喝冰美式', isOwner: true, source: 'auto' }, cfg, now + 1000)
+  ok(again.deduped === true, '同样的话不再新增')
+  eq(card.records.length, 1, '仍然一条')
+  eq(again.record.recallCount, 1, '改成复习：召回次数 +1')
+
+  const empty = addRecord(card, { text: '   ' }, cfg, now)
+  eq(empty.ok, false, '空文本被拒')
+}
+
+console.log('复习回升：')
+{
+  const now = Date.now()
+  const card = createCard('global')
+  const r = addRecord(card, { text: '这件事被记下来过，后来又提起了', source: 'test' }, cfg, now)
+  r.record.clarity = 'trace'
+  const touched = touchRecords(card, [r.record.id], now + 1000)
+  eq(touched, 1, '复习命中一条')
+  eq(r.record.clarity, 'fuzzy', '从「只剩印象」回升到「模糊」')
+  eq(r.record.recallCount, 1, '召回次数 +1')
+}
+
+console.log('渲染：')
+{
+  const now = Date.now()
+  const card = createCard('global')
+  addRecord(card, { text: '这是第一次和树树说话，在三月的一个雨天', isOwner: true, isFirst: true, source: 'test' }, cfg, now)
+  const pinned = addRecord(card, { text: '树树的目标是嵌入式工程师，偏软件方向', isOwner: true, source: 'test' }, cfg, now)
+  setPinned(card, pinned.record.id, true)
+  const fuzzy = addRecord(card, { text: '在群里聊到过一句关于数学建模的事，具体内容已经记不太清了', source: 'test' }, cfg, now)
+  fuzzy.record.clarity = 'fuzzy'
+  const trace = addRecord(card, { text: '好像还提过一次跟硬件选型有关的事，细节全忘了', source: 'test' }, cfg, now)
+  trace.record.clarity = 'trace'
+
+  const out = renderCard(card, { config: cfg, now })
+  ok(out.includes('【记忆卡'), '有标题')
+  ok(out.includes('我们的开始') || out.includes('永远不会忘的'), '锚点分区存在')
+  ok(out.includes('细节记不清了'), '模糊的记忆明说记不清')
+  ok(out.includes('好像有') && out.includes('想不起来了'), '只剩印象的用「好像有…想不起来」')
+  ok(out.includes('不要编'), '提示词里明确禁止编造')
+
+  // 预算裁剪：极小的预算下整条剔除低优先级内容，而不是切断半句
+  const tiny = renderCard(card, { config: cfg, maxChars: 210, now })
+  ok(tiny.length <= 220, `预算裁剪生效（${tiny.length} 字）`)
+  ok(!tiny.includes('数学建模'), '最低优先级（正在模糊的）被整条剔除')
+  ok(tiny.includes('嵌入式工程师'), '高优先级（固定的锚点）保留下来')
+  ok(!tiny.endsWith('，'), '没有把句子切断在半截')
+
+  const empty = renderCard(createCard('global'), { config: cfg, now })
+  eq(empty, '', '空卡不往提示词里塞空壳')
+}
+
+console.log('容量压缩：')
+{
+  const now = Date.now()
+  const card = createCard('global')
+  for (let i = 0; i < 40; i += 1) {
+    addRecord(card, { text: `第 ${i} 条普通记忆，内容长度中等，用来把卡撑到需要压缩的程度`, source: 'test' }, cfg, now - i * 1000)
+  }
+  const keep = addRecord(card, { text: '这条是固定的锚点，压缩时不该被淘汰', source: 'test' }, cfg, now)
+  setPinned(card, keep.record.id, true)
+  const before = card.records.length
+  const smallCfg = normalizeConfig({ warnChars: 1200 })
+  const steps = compactCard(card, smallCfg, { now })
+  ok(steps > 0, `压缩做了事（${steps} 步）`)
+  ok(card.records.length < before, '条数确实减少了')
+  ok(card.records.some((record) => record.id === keep.record.id), 'pinned 的那条没被淘汰')
+  ok(renderCard(card, { config: smallCfg, full: true, now }).length <= 1200, '压缩后落在预算内')
+}
+
+console.log('检索：')
+{
+  const now = Date.now()
+  const card = createCard('global')
+  addRecord(card, { text: '树树在做 STM32 的串口通信实验，卡在中断配置', isOwner: true, source: 'test' }, cfg, now)
+  addRecord(card, { text: '今天天气不错，去操场跑了三公里', source: 'test' }, cfg, now)
+  addRecord(card, { text: '树树说 STM32 的时钟树好难理解', isOwner: true, source: 'test' }, cfg, now)
+
+  const hits = recall(card, 'STM32 中断')
+  ok(hits.length >= 1, `搜到了 ${hits.length} 条`)
+  ok(hits[0].record.text.includes('STM32'), '第一条确实相关')
+  eq(recall(card, '').length, 0, '空查询返回空')
+  eq(recall(card, '完全不存在的关键词组合').length, 0, '搜不到就是搜不到')
+}
+
+console.log('忘记与存档：')
+{
+  const dir = mkdtempSync(join(tmpdir(), 'soul-test-'))
+  const file = join(dir, 'archive.jsonl')
+  const archive = makeArchiver(file)
+  const card = createCard('global')
+  const r = addRecord(card, { text: '这条准备被忘掉，内容够长', source: 'test' }, cfg, Date.now())
+  const removed = forgetRecord(card, r.record.id, archive)
+  ok(removed !== null, '忘掉返回了被删的记录')
+  eq(card.records.length, 0, '卡里没了')
+
+  const lines = readFileSync(file, 'utf8').trim().split('\n')
+  eq(lines.length, 1, '档案件写了一行')
+  const found = recallArchived(file, '准备被忘掉')
+  eq(found.length, 1, '能从档案件里捞回来')
+
+  rmSync(dir, { recursive: true, force: true })
+}
+
+console.log('读写与状态：')
+{
+  const dir = mkdtempSync(join(tmpdir(), 'soul-test-'))
+  const file = join(dir, 'card.json')
+  const card = createCard('global')
+  addRecord(card, { text: '写盘再读回来要一模一样', source: 'test' }, cfg, Date.now())
+  saveCard(file, card)
+  const back = loadCard(file)
+  ok(back !== null, '读回来了')
+  eq(back.records.length, 1, '条数一致')
+  eq(back.records[0].text, '写盘再读回来要一模一样', '内容一致')
+
+  const st = status(back, cfg)
+  eq(st.count, 1, '统计条数对')
+  eq(st.level, 'ok', '容量告急档位正常')
+  ok(CLARITY_ORDER.includes(back.records[0].clarity), '清晰度是合法值')
+
+  const broken = join(dir, 'broken.json')
+  saveCard(broken, card)
+  writeFileSync(broken, '{ 这不是 JSON', 'utf8')
+  eq(loadCard(broken), null, '坏文件返回 null 而不是抛错')
+
+  rmSync(dir, { recursive: true, force: true })
+}
+
+console.log('kind：提炼给的类型要真的落库、读回来还在（2026-10-30）：')
+{
+  const card = createCard('global')
+  const typed = addRecord(card, { text: '树树想明年打蓝桥杯嵌入式赛道', kind: 'preference', source: 'test' }, cfg, Date.now())
+  eq(typed.record.kind, 'preference', 'addRecord 把 kind 写进记录')
+  eq(addRecord(card, { text: '一条没给 kind 的普通记忆', source: 'test' }, cfg, Date.now()).record.kind, 'event', '缺省归到 event')
+  eq(addRecord(card, { text: '模型乱写的类型也要归一', kind: 'nonsense', source: 'test' }, cfg, Date.now()).record.kind, 'event', '非法值归到 event')
+
+  const dir = mkdtempSync(join(tmpdir(), 'soul-test-'))
+  const file = join(dir, 'card.json')
+  saveCard(file, card)
+  const back = loadCard(file)
+  eq(back.records.find((r) => r.text.includes('蓝桥杯'))?.kind, 'preference', '写盘再读回来 kind 不丢')
+  ok(back.records.every((r) => typeof r.kind === 'string'), '回读后每条都有 kind（老卡不会留下 undefined）')
+  rmSync(dir, { recursive: true, force: true })
+}
+
+console.log('kind 展示降噪（2026-10-30）：默认 event 不戴标签')
+{
+  const now = Date.now()
+  const card = createCard('global')
+  addRecord(card, { text: '树树把开发板焊好了，还顺手调了串口', kind: 'event', isOwner: true, source: 'test' }, cfg, now)
+  addRecord(card, { text: '树树是烟台大学机器人工程专业大二学生', kind: 'fact', isOwner: true, source: 'test' }, cfg, now)
+  addRecord(card, { text: '树树不敢吃辣，一点辣都受不了', kind: 'preference', isOwner: true, source: 'test' }, cfg, now)
+  addRecord(card, { text: '答应过树树，以后提醒他别熬夜', kind: 'promise', isOwner: true, source: 'test' }, cfg, now)
+  addRecord(card, { text: '树树熬夜之后会自责', kind: 'feeling', isOwner: true, source: 'test' }, cfg, now)
+
+  const block = renderRecalledBlock([card], { config: cfg, query: '树树', now })
+  ok(block.includes('〔事件〕') === false, '默认类型 event 不显示标签（老记录不再满屏〔事件〕）')
+  ok(block.includes('〔事实〕') === true, '非默认值显示中文标签：事实')
+  ok(block.includes('〔偏好〕') === true, '非默认值显示中文标签：偏好')
+  ok(block.includes('〔约定〕') === true, '非默认值显示中文标签：约定')
+  ok(block.includes('〔感受〕') === true, '非默认值显示中文标签：感受')
+  ok(block.includes('〔fact〕') === false && block.includes('〔preference〕') === false, '标签用中文，不出现英文 kind')
+}
+
+console.log('老记录 kind 迁移（v1 → v2，2026-10-30）')
+{
+  const dir = mkdtempSync(join(tmpdir(), 'soul-test-'))
+  const file = join(dir, 'legacy.json')
+  const base = {
+    clarity: 'vivid',
+    importance: 70,
+    createdAt: '2026-09-01T10:00:00.000Z',
+    lastSeenAt: '2026-09-02T10:00:00.000Z',
+    recallCount: 2,
+    pinned: false,
+    isInitial: false,
+    source: 'auto',
+    scope: 'global'
+  }
+  const legacy = {
+    version: 1,
+    scope: 'global',
+    records: [
+      { ...base, id: 'r1', text: '树树是烟台大学机器人工程专业大二学生', tags: ['owner', 'fact'] },
+      { ...base, id: 'r2', text: '第一次和树树说话是三月的一个雨天', tags: ['owner', 'first'] },
+      { ...base, id: 'r3', text: '树树专业是机器人工程，现在大二', tags: ['owner'] },
+      { ...base, id: 'r4', text: '帮我把 onebot 插件改一下，让消息带时间', tags: ['owner'] },
+      { ...base, id: 'r5', text: '树树喜欢喝冰美式', tags: ['owner'], kind: 'preference' },
+      { ...base, id: 'r6', text: '树树是烟台大学机器人工程专业大二学生', tags: ['owner'], kind: 'event' }
+    ],
+    stats: { added: 5, decayed: 0, forgotten: 0, compacted: 0, lastDecayAt: null },
+    lastDecayDate: null,
+    createdAt: base.createdAt,
+    updatedAt: base.updatedAt
+  }
+  writeFileSync(file, JSON.stringify(legacy, null, 2), 'utf8')
+
+  const back = loadCard(file)
+  eq(back.records.map((r) => r.kind), ['fact', 'event', 'fact', 'event', 'preference', 'fact'], '按判据补 kind（tags fact / first / FACT_RE / 兜底 / 已有值不动 / 被回写成 event 的重新判一次）')
+  eq(back.records.map((r) => r.id), ['r1', 'r2', 'r3', 'r4', 'r5', 'r6'], 'id 不变')
+  eq(back.records.map((r) => r.text), legacy.records.map((r) => r.text), '正文不变、顺序不变')
+  eq(back.records[3].tags, ['owner'], 'tags 没被迁移改动')
+  eq(back.records[0].recallCount, 2, '召回次数没被迁移改动')
+
+  const onDisk = JSON.parse(readFileSync(file, 'utf8'))
+  eq(onDisk.version, 2, '迁移后写回 version: 2（带版本号）')
+  eq(onDisk.records.map((r) => r.kind), ['fact', 'event', 'fact', 'event', 'preference', 'fact'], 'kind 落到文件里')
+  eq(onDisk.records[0].importance, 70, '其它字段原样保留')
+
+  // 幂等：版本号已经对上，第二次加载不该再改写文件
+  const before = readFileSync(file, 'utf8')
+  loadCard(file)
+  eq(readFileSync(file, 'utf8'), before, '第二次加载不再改动文件（幂等）')
+
+  // 已经迁移过的卡（v2 但某条缺 kind）只归一到 event，不按 tags 猜 fact
+  const v2file = join(dir, 'v2.json')
+  writeFileSync(v2file, JSON.stringify({
+    version: 2,
+    scope: 'global',
+    records: [{ ...base, id: 'x1', text: '树树专业是机器人工程，现在大二', tags: ['owner'] }]
+  }, null, 2), 'utf8')
+  eq(loadCard(v2file).records[0].kind, 'event', 'v2 卡缺 kind 时归一到 event（迁移只跑一次）')
+
+  rmSync(dir, { recursive: true, force: true })
+}
+
+console.log('\n压缩不会卡死（2026-11-04）：')
+{
+  // 原实现里 while 只在 clarity==='trace' 时退出，而 stepDown 对 'forgotten'
+  // 返回 true 却不改值 → chars 不减、clarity 不变 → 死循环。
+  // compactCard 在注入路径上同步跑，卡住就是整个会话卡住。
+  const cfg = normalizeConfig({})
+  const card = createCard('global')
+  for (let i = 0; i < 401; i += 1) {
+    addRecord(card, {
+      text: `第 ${i} 条随便记的东西，长度凑一凑让预算撑爆${'啊'.repeat(30)}`,
+      isOwner: true, isPrivate: true, importance: 50, kind: 'event'
+    }, cfg, Date.now() - i * 3600_000)
+  }
+  card.records.push({
+    id: 'dirty-forgotten', text: '这条是遗忘状态的脏数据', clarity: 'forgotten',
+    importance: 10, kind: 'event', tags: [], createdAt: Date.now(), lastSeenAt: Date.now(), recallCount: 0
+  })
+
+  const started = Date.now()
+  const steps = compactCard(card, cfg, { now: Date.now() })
+  const elapsed = Date.now() - started
+
+  ok(elapsed < 5000, `401 条 + 1 条 forgotten 能在 5 秒内返回（实际 ${elapsed} ms）`)
+  ok(steps > 0, '确实压缩了东西')
+  eq(card.records.some((r) => r.id === 'dirty-forgotten'), false, 'forgotten 状态那条被清掉（它本来就不该留在卡里）')
+}
+
+console.log('\n压缩遇到认不出的清晰度要跳过而不是删（2026-11-04）：')
+{
+  const cfg = normalizeConfig({})
+  const card = createCard('global')
+  for (let i = 0; i < 401; i += 1) {
+    addRecord(card, {
+      text: `第 ${i} 条随便记的东西，长度凑一凑让预算撑爆${'啊'.repeat(30)}`,
+      isOwner: true, isPrivate: true, importance: 50, kind: 'event'
+    }, cfg, Date.now() - i * 3600_000)
+  }
+  card.records.push({
+    id: 'dirty-unknown', text: '这条清晰度是个旧版本留下的陌生值', clarity: 'half-clear',
+    importance: 10, kind: 'event', tags: [], createdAt: Date.now(), lastSeenAt: Date.now(), recallCount: 0
+  })
+
+  const started = Date.now()
+  compactCard(card, cfg, { now: Date.now() })
+  ok(Date.now() - started < 5000, '陌生清晰度也不会卡死')
+  eq(card.records.some((r) => r.id === 'dirty-unknown'), true, '认不出的那条被保留（不替用户删数据）')
+}
+
+console.log('\nforgotten 不该吃掉压缩配额（2026-11-04 修 B5 另一半）：')
+{
+  // sectionize 会跳过 forgotten，它们在注入里一个字符都不占。
+  // 但它们原先也进了 candidates、还排在最前，于是每轮压缩先删它们：
+  // 删掉不省字符，却照样消耗「单次最多动 N 条」的配额 —— 一次压缩零收益。
+  const cfg = normalizeConfig({})
+  const card = createCard('global')
+  for (let i = 0; i < 20; i += 1) {
+    addRecord(card, {
+      text: `看得见的一条${'啊'.repeat(40)}`, isOwner: true, isPrivate: true, importance: 50, kind: 'event'
+    }, cfg, Date.now() - i * 3600_000)
+  }
+  for (let i = 0; i < 40; i += 1) {
+    card.records.push({
+      id: `fg-${i}`, text: `看不见的一条${'啊'.repeat(40)}`, clarity: 'forgotten',
+      importance: 10, kind: 'event', tags: [], createdAt: Date.now(), lastSeenAt: Date.now(), recallCount: 0
+    })
+  }
+
+  const visibleBefore = card.records.filter((r) => r.clarity !== 'forgotten').length
+  const steps = compactCard(card, cfg, { now: Date.now() })
+
+  eq(card.records.filter((r) => r.clarity === 'forgotten').length, 0, 'forgotten 全被清掉')
+  eq(card.records.length, visibleBefore, '可见记录一条没少（forgotten 没有白吃配额）')
+  // 返回值必须 > 0：maintain 只在 > 0 时 saveCard（store.js:560）。
+  // 返回 0 的话这批删除只改了内存、没落盘 —— 重启后 forgotten 回来，
+  // 每次启动又往 archive.jsonl 写一遍（档案会重复膨胀）。
+  ok(steps > 0, `返回值 > 0（实际 ${steps}），否则调用方不会存盘`)
+  eq(steps, 40, '返回值 = 清理掉的 forgotten 条数')
+}
+
+console.log('\n整卡都钉住时，清理也必须报出去（2026-11-04 第二次修）：')
+{
+  // 这卡里没有一条能进 candidates（全 pinned / 初始 / 主人重要），
+  // 但躺着 10 条 forgotten。原来的 `if (candidates.length === 0) return 0`
+  // 会把「刚删掉 10 条」这件事吞掉 —— 调用方不存盘，磁盘上原样还在，
+  // 重启后又删一遍、又归档一遍（档案重复膨胀，删除白做）。
+  const cfg = normalizeConfig({})
+  const card = createCard('global')
+  for (let i = 0; i < 12; i += 1) {
+    card.records.push({
+      id: `pin-${i}`, text: `钉住的一条${'啊'.repeat(20)}`, clarity: 'vivid', pinned: true,
+      importance: 80, kind: 'preference', tags: ['owner'], createdAt: Date.now() - i * 3600_000,
+      lastSeenAt: Date.now(), recallCount: 0
+    })
+  }
+  for (let i = 0; i < 10; i += 1) {
+    card.records.push({
+      id: `fg2-${i}`, text: `看不见的一条${'啊'.repeat(20)}`, clarity: 'forgotten',
+      importance: 10, kind: 'event', tags: [], createdAt: Date.now(), lastSeenAt: Date.now(), recallCount: 0
+    })
+  }
+
+  const steps = compactCard(card, cfg, { now: Date.now() })
+
+  eq(card.records.filter((r) => r.clarity === 'forgotten').length, 0, 'forgotten 全被清掉')
+  eq(card.records.length, 12, '钉住的 12 条一条没少')
+  ok(steps >= 10, `返回值要带出清理数（实际 ${steps}），否则调用方不会存盘`)
+}
+
+console.log('\n降级落卡是安全的（B3 的前提，2026-11-04 核）：')
+{
+  // 提炼失败时把候选原话直存 —— 这条路的安全性完全取决于 ingestCandidates 里的闸。
+  // 这里验证三件事：
+  //   ① 任务/进度类原话被 reject 闸挡掉（不会进卡）
+  //   ② 带人物属性的原话会被升成 fact，门槛 70 → 42，所以「不吃辣」这种能留下
+  //   ③ 降级不是「全丢」，也不是「全收」
+  const { ingestCandidates } = await import('../lib/extract.js')
+  const cfg = normalizeConfig({})
+  const card = createCard('global')
+
+  const written = ingestCandidates(card, addRecord, [
+    // 人物属性 + 祈使句：looksPersonal 命中 → 升 fact → 门槛 42
+    { text: '帮我记住我不吃辣', isOwner: true, kind: 'event', scored: { importance: 52 } },
+    // 进度类：被 autoMemoryRejectReason 整条挡掉
+    { text: '下一步要把日记的形状改回来', isOwner: true, kind: 'event', scored: { importance: 80 } }
+  ], cfg, Date.now())
+
+  eq(written, 1, '两条候选只留下一条（progress 类被拒，人物原话留下）')
+  ok(card.records.some((r) => String(r.text).includes('不吃辣')), '「帮我记住我不吃辣」进了卡')
+  ok(!card.records.some((r) => String(r.text).includes('下一步要')), '「下一步要把…」被挡在门外')
+  const kept = card.records.find((r) => String(r.text).includes('不吃辣'))
+  eq(kept?.kind, 'fact', '它是以 fact 身份进去的（门槛 42 而不是 event 的 70）')
+}
+
+console.log(`\n结果：${passed} 过 / ${failed} 败`)
+process.exit(failed === 0 ? 0 : 1)

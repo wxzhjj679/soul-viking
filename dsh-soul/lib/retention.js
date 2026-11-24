@@ -1,0 +1,229 @@
+/**
+ * retention.js —— 对话流水的保留期与体积上限（P1-5 的另一半，2026-11-05）。
+ *
+ * 报告 P1-5 指出：`conversations/*.jsonl`、`archive.jsonl` 全明文、无保留期、无大小上限，
+ * 实测 30~100KB/天且只涨不消，「遗忘」只是移出提示词、磁盘上永久留存。
+ * S2 已经补了 0600 与日志脱敏，剩下这半是**生命周期**。
+ *
+ * 设计上极度保守，因为这里动的是用户数据：
+ *   - 两个开关默认都是 **0 = 永不自动删除**；老配置文件没有这两个键，
+ *     `loadConfig()` 的 `{...DEFAULT_CONFIG, ...raw}` 会自动补 0，一个文件都不动。
+ *   - 只认 `<diaryConversationsDir()>/YYYY-MM-DD.jsonl` 这一种严格命名；
+ *     `.bak` / `.corrupt-*` / `*.md` 日记 / `notes/` / `secrets/` / 子目录一律不碰。
+ *   - 只按整天文件删，不截断、不改写、不解析内容；今天与未来的文件永不删。
+ *   - `archive.jsonl` 是 README 承诺的「忘了也能查回来」，**永不自动删除**。
+ *     2026-11-06 P12 起可选「分片」（`archiveMaxBytes`，默认 0 = 关闭）：
+ *     超过上限只把主文件另存为带时间戳的分片，不 unlink 任何文件；
+ *     `memory/card-io.js` 的 recallArchived 会连分片一起查，承诺不破。
+ *   - `dryRun` 默认 true 语义由调用方决定；真删时每个文件都记日志，失败逐条报。
+ *
+ * 计划与执行分开：planConversationPrune 是纯函数，便于清单式回归测试。
+ */
+import { existsSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs'
+import { basename, join } from 'node:path'
+import { note } from './env.js'
+import { diaryConversationsDir } from './paths.js'
+
+export const DAY_MS = 24 * 60 * 60 * 1000
+const DATE_FILE_RE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/
+
+/**
+ * 本地日期键，避免为了一个函数把整个 diary.js 拖成循环依赖。
+ *
+ * 2026-11-07 R11 / P2-20：原来是 `toISOString().slice(0,10)` —— 那是 **UTC**。
+ * 引擎里其它所有 dateKey（completion 的 todayKey、日记文件名、归档日期）都是本地时间。
+ * 两套口径混用的后果很具体：东八区晚上 8 点之后本地已经是第二天、UTC 还是当天，
+ * 清理对话记录时算出来的「今天是哪天」差一天 —— **可能把还该留的那天删掉**。
+ */
+export function dateKeyOf(ms) {
+  const d = new Date(Number(ms) || Date.now())
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+/** 'YYYY-MM-DD' 是否真实存在（本地日历校验，不经 UTC 时间戳）。 */
+function isValidDateKey(key) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key))
+  if (m === null) return false
+  const y = Number(m[1])
+  const mo = Number(m[2])
+  const d = Number(m[3])
+  const probe = new Date(y, mo - 1, d, 12, 0, 0, 0) // 取正午，避开 DST 折叠日的边界
+  return probe.getFullYear() === y && probe.getMonth() === mo - 1 && probe.getDate() === d
+}
+
+/** 本地日期键 + n 天（n 可负）→ 'YYYY-MM-DD'。纯日历运算，与 dateKeyOf 同口径。 */
+function shiftDateKey(key, n) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key))
+  if (m === null) return ''
+  const probe = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + Number(n || 0), 12, 0, 0, 0)
+  return dateKeyOf(probe.getTime())
+}
+
+/**
+ * 纯函数：算出该删哪些文件。
+ *
+ * @param {Array<{name: string, bytes?: number}>} entries 目录项
+ * @param {{ today?: string, keepDays?: number, maxBytes?: number }} options
+ *   keepDays  = 保留最近 N 天（含今天）；0 = 不按时间删
+ *   maxBytes  = 目录总量上限（字节）；0 = 不按体积删
+ * @returns {{ skipped: boolean, toDelete: Array<{name:string, reason:string}>,
+ *            kept: string[], totalBytes: number, keptBytes: number }}
+ */
+export function planConversationPrune(entries, { today = dateKeyOf(Date.now()), keepDays = 0, maxBytes = 0 } = {}) {
+  const days = Math.max(0, Math.trunc(Number(keepDays) || 0))
+  const budget = Math.max(0, Math.trunc(Number(maxBytes) || 0))
+  const skipped = days === 0 && budget === 0
+
+  // 只收严格命名 + 日期真实存在的文件。无效日期（2026-13-45）一律不删，宁可留着。
+  // 2026-11-10 R20-B（审查 M5）：日期校验与加减改走**纯日历运算**。
+  // 原来 `Date.parse(key+'T00:00:00Z')`（UTC 午夜）→ 本地 dateKeyOf 比对：
+  // 负时区（UTC-5 ~ UTC-8）下 UTC 午夜 = 本地前一天，所有合法文件被判无效，
+  // 一个都删不掉（cutoff 同理偏移）。文件名是本地日期键，就用本地日历校验它。
+  const dated = []
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const name = String(entry?.name ?? '')
+    const match = DATE_FILE_RE.exec(name)
+    if (match === null) continue
+    const key = match[1]
+    if (!isValidDateKey(key)) continue
+    dated.push({ name, key, bytes: Math.max(0, Math.trunc(Number(entry.bytes) || 0)) })
+  }
+  dated.sort((a, b) => a.key.localeCompare(b.key))
+
+  // 「保留最近 N 天」= 今天 + 前 N-1 天；超出这个窗口的最旧文件先删。
+  // 加减用纯日历运算（本地日期键 + 天数），不经过 UTC 时间戳。
+  const cutoffKey = days > 0 ? shiftDateKey(today, -(days - 1)) : ''
+  const deletedNames = new Set()
+  const toDelete = []
+  for (const item of dated) {
+    // 今天与未来永远保留：正在写的流水不能删，时钟回拨也别误删。
+    if (item.key >= today) continue
+    if (days > 0 && item.key < cutoffKey) {
+      toDelete.push({ name: item.name, reason: 'retention' })
+      deletedNames.add(item.name)
+    }
+  }
+
+  // 体积预算：在「没被过期删」的文件里，从最旧的整天文件开始删到不超预算。
+  const survivors = dated.filter((item) => !deletedNames.has(item.name))
+  let keptBytes = survivors.reduce((sum, item) => sum + item.bytes, 0)
+  if (budget > 0) {
+    for (const item of survivors) {
+      if (keptBytes <= budget) break
+      if (item.key >= today) continue // 同样不动今天
+      toDelete.push({ name: item.name, reason: 'budget' })
+      deletedNames.add(item.name)
+      keptBytes -= item.bytes
+    }
+  }
+
+  return {
+    skipped,
+    toDelete,
+    kept: dated.filter((item) => !deletedNames.has(item.name)).map((item) => item.name),
+    totalBytes: dated.reduce((sum, item) => sum + item.bytes, 0),
+    keptBytes
+  }
+}
+
+/**
+ * 扫描真实目录并执行清理。
+ * 默认 dryRun=true：只报告不动手，方便用户/设置页先看清会删什么。
+ */
+export function pruneConversations({ config = {}, today = dateKeyOf(Date.now()), dryRun = true } = {}) {
+  const options = {
+    today,
+    keepDays: config.conversationRetentionDays,
+    maxBytes: config.conversationMaxTotalBytes
+  }
+  const days = Math.max(0, Math.trunc(Number(options.keepDays) || 0))
+  const budget = Math.max(0, Math.trunc(Number(options.maxBytes) || 0))
+  if (days === 0 && budget === 0) {
+    return { skipped: true, dryRun, toDelete: [], deleted: [], failed: [], totalBytes: 0, keptBytes: 0 }
+  }
+
+  const dir = diaryConversationsDir()
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => {
+        try { return { name: entry.name, bytes: statSync(join(dir, entry.name)).size } } catch { return null }
+      })
+      .filter((entry) => entry !== null)
+  } catch (error) {
+    // 目录不存在 / 读不了都不该影响主流程。
+    return {
+      skipped: false, dryRun, toDelete: [], deleted: [], failed: [],
+      totalBytes: 0, keptBytes: 0, error: error instanceof Error ? error.message : String(error)
+    }
+  }
+
+  const plan = planConversationPrune(entries, { today, keepDays: days, maxBytes: budget })
+  const deleted = []
+  const failed = []
+  if (dryRun === false) {
+    for (const { name, reason } of plan.toDelete) {
+      try {
+        unlinkSync(join(dir, name))
+        deleted.push(name)
+        note('diary', `对话流水保留期清理：删掉 ${name}（${reason === 'retention' ? '超过保留天数' : '超过体积上限'}）`)
+      } catch (error) {
+        failed.push(name)
+        note('diary', `对话流水保留期清理失败：${name}（${error instanceof Error ? error.message : String(error)}）`)
+      }
+    }
+  }
+  return { ...plan, dryRun, deleted, failed }
+}
+
+
+// ---------------------------------------------------------------------------
+// archive.jsonl 分片（2026-11-06 P12）
+// ---------------------------------------------------------------------------
+
+/**
+ * 归档文件达到体积上限时另存为分片，**绝不删除任何文件**。
+ *
+ * 为什么是「分片」而不是「轮转」：轮转要覆盖/删掉最旧那份，而 archive.jsonl 是
+ * README 承诺的「忘了也能查回来」。这里只 rename、不 unlink，旧内容完整保留；
+ * recallArchived() 会一并扫描分片，查回能力不因分片而丢失。
+ *
+ * 分片名形如 `archive.jsonl.2026-11-06T12-49-00-123Z`（ISO 里的 `:` 在 Windows
+ * 文件名里非法，全部换成 `-`）。同一毫秒重复触发会加序号后缀，不覆盖已有分片。
+ *
+ * 默认 `archiveMaxBytes = 0` → 本函数连 statSync 都不做，升级后零行为变化。
+ * 由 maintain() 每回合调用（内部还有一天一次的衰减节流），不在归档 append 热路径上。
+ *
+ * @returns {{skipped:boolean, rotated:boolean, size?:number, to?:string, reason?:string, error?:string}}
+ */
+export function rotateArchiveIfNeeded(file, maxBytes, { now = Date.now() } = {}) {
+  const budget = Math.max(0, Math.trunc(Number(maxBytes) || 0))
+  if (budget <= 0) return { skipped: true, rotated: false }
+
+  let size = 0
+  try {
+    size = statSync(file).size
+  } catch {
+    return { skipped: false, rotated: false, reason: 'missing' }
+  }
+  if (size < budget) return { skipped: false, rotated: false, size }
+
+  const stamp = new Date(now).toISOString().replace(/[:.]/g, '-')
+  let target = `${file}.${stamp}`
+  let seq = 0
+  while (existsSync(target)) {
+    seq += 1
+    target = `${file}.${stamp}-${seq}`
+  }
+  try {
+    renameSync(file, target)
+    note('memory', `归档分片：${basename(file)} 已达 ${size} 字节，另存为 ${basename(target)}（旧内容完整保留，未删任何文件）`)
+    return { rotated: true, size, to: target }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    note('memory', `归档分片失败：${reason}（原文件保持不动）`)
+    return { rotated: false, size, error: reason }
+  }
+}

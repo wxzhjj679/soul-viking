@@ -1,0 +1,126 @@
+{
+  "name": "dsh-agent-soul",
+  "version": "0.10.6",
+  "type": "module",
+  "description": "给 DSH 的 agent 一套会忘事的记忆、一份会变的人格和一份会起伏的心情：每轮注入人格 / 记忆 / 笔记 / 目的四段上下文，心情自己判起伏、再补一段状态与语气（可关）；记忆按人的规律衰减（清晰→模糊→只剩印象→遗忘），「心里惦记的事」让她的主动有连续性。",
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "agent",
+    "memory",
+    "mood",
+    "persona",
+    "personality",
+    "soul"
+  ],
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "assets",
+    "docs",
+    "tools",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.md",
+    "LICENSES"
+  ],
+  "scripts": {
+    "prepack": "npm run lint && npm test",
+    "build:client": "node tools/build-client.mjs",
+    "sync:host": "node tools/build-client.mjs && node tools/sync.mjs",
+    "test": "node tools/build-client.mjs && node tools/run-tests.mjs",
+    "lint": "node tools/lint.mjs",
+    "test:contracts": "node tools/build-client.mjs && node tools/run-tests.mjs --only=tests/contract/",
+    "test:s1": "node tests/s1-hotfix.test.js",
+    "test:s2": "node tests/s2-hardening.test.js",
+    "test:llm-timeout": "node tests/llm-stream-timeout.test.js",
+    "test:post-diary": "node tests/post-diary-api.test.js",
+    "test:retention": "node tests/retention.test.js",
+    "test:archive-rotate": "node tests/archive-rotate.test.js",
+    "test:save-state": "node tests/save-state-failure.test.js",
+    "bench:recall": "node tools/eval-recall.mjs",
+    "test:owner": "node tests/owner-identity.test.js",
+    "test:extract": "node tests/extract.test.js",
+    "test:write-failure": "node tests/write-failure.test.js",
+    "test:refine": "node tests/refine.test.js",
+    "test:goal": "node tests/goal-revive.test.js",
+    "test:archive": "node tests/archive.test.js",
+    "test:diary": "node tests/diary.test.js",
+    "test:diary-new": "node tests/diary-new-path.test.js",
+    "test:notes": "node tests/notes.test.js",
+    "test:diary-tool": "node tests/diary-tool.test.js",
+    "test:api-auth": "node tests/api-auth.test.js",
+    "test:memory": "node tests/memory.test.js",
+    "test:integrity": "node tests/memory-integrity.test.js",
+    "test:memory-dupe": "node tests/memory-near-dupe.test.js",
+    "test:recall": "node tests/recall-dedupe.test.js",
+    "test:recall-visibility": "node tests/recall-visibility.test.js",
+    "test:host": "node tests/host-probe.test.js",
+    "test:secrets": "node tests/secrets-judge.test.js",
+    "test:tone": "node tests/tone.test.js",
+    "test:recent": "node tests/recent-context.test.js",
+    "test:log": "node tests/log-rotate.test.js",
+    "test:health": "node tests/health.test.js",
+    "test:inject": "node tests/inject.test.js",
+    "test:echo": "node tests/echo.test.js",
+    "test:mood": "node tests/mood.test.js",
+    "test:mood-digest": "node tests/mood-digest.test.js",
+    "test:emotion": "node tests/emotion-purpose.test.js",
+    "test:persona": "node tests/persona.test.js",
+    "test:purpose": "node tests/purpose.test.js",
+    "test:registry": "node tests/registry.test.js",
+    "test:session-title": "node tests/session-title.test.js",
+    "test:smoke": "node tests/smoke.test.js",
+    "test:client": "node tools/build-client.mjs && node tests/client.test.js",
+    "sync": "node tools/build-client.mjs",
+    "test:r1-persist": "node tests/r1-maintain-persist.test.js",
+    "test:r16-uri": "node tests/r16-asset-uri.test.js",
+    "test:r6-config": "node tests/r6-config-validation.test.js",
+    "test:guards": "node tests/r2-r3-r4-guards.test.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "engines": {
+    "node": ">=22.19",
+    "dsh": ">=0.2.0-rc.1 || >=0.2.1-rc.2 || >=0.2.2-rc.1"
+  },
+  "author": "单树见月 <3472302240@qq.com>",
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.0-rc.1+": "compatible",
+        "0.2.2-rc.1+": "unverified"
+      },
+      "verifiedOn": "0.2.1-rc.5",
+      "note": "0.2.2-rc.1 仅声明 engines 放行，尚未实机验证（阶段 0）；实测见阶段 1-4"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danshuyue/dsh-agent-soul.git"
+  },
+  "bugs": {
+    "url": "https://github.com/danshuyue/dsh-agent-soul/issues"
+  },
+  "homepage": "https://github.com/danshuyue/dsh-agent-soul#readme",
+  "license": "SEE LICENSE IN LICENSE"
+}

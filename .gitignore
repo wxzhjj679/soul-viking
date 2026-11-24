@@ -1,0 +1,22 @@
+# 依赖与构建产物
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# 本地运行时数据（SQLite 记忆库、trace、日志）
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+logs/
+
+# 环境变量与密钥（绝不入库）
+.env
+.env.*
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store

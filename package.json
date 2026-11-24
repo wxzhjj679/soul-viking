@@ -1,0 +1,25 @@
+{
+  "name": "soul-viking",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SOUL-Viking 极简 Agent 中间件 (MCP Server，零运行时依赖)：人格注入 + 跨会话记忆 + 派发指引 + 验证取证，内嵌 danshuyue/dsh-agent-soul 完整灵魂引擎",
+  "bin": {
+    "soul-viking-mcp": "mcp_server/index.ts"
+  },
+  "engines": {
+    "node": ">=23.6.0"
+  },
+  "scripts": {
+    "start": "node --no-warnings mcp_server/index.ts",
+    "test": "node --test --no-warnings \"tests/*.test.ts\"",
+    "test:dsh-engine": "cd dsh-soul && node tools/run-tests.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "reembed": "node --no-warnings scripts/reembed.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0"
+  }
+}

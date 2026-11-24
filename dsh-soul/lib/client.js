@@ -1,0 +1,2719 @@
+/**
+ * client.js —— 浏览器半侧：设置页（手写 __ModuleLoader__ bundle）。
+ *
+ * ⚠️ 本文件是【生成物】，不要直接改 —— 改 lib/client/*.js 然后跑
+ *    `node tools/build-client.mjs`（或 `npm run sync`）。DSH 客户端每个包只
+ *    出一个 bundle、兄弟文件无法同步 require，所以把按职责拆开的片段拼回单文件。
+ */
+
+window.__ModuleLoader__.load({
+  id: 'dsh-agent-soul',
+  factory: function (require) {
+    // ⚠️ 这两行不能省：宿主只提供 require，不提供 CommonJS 的 module/exports。
+    // 少了它们，factory 里一碰 module.exports 就是 "module is not defined"，
+    // 而 DSH 的启动日志只会说「1 entry did not activate」—— 整个应用起不来。
+    // node --check 查不出这个问题：它是语法层面合法的，只有真跑一次才炸。
+    var module = { exports: {} }
+    var exports = module.exports
+
+    var React = require('react')
+    var h = React.createElement
+    var useCallback = React.useCallback
+    var useEffect = React.useEffect
+    var useState = React.useState
+
+    var NS = 'dsh-agent-soul'
+
+// ---- 样式 -------------------------------------------------------------
+    // 片段：运行在 client.js 工厂函数作用域内。可用：document、NS（在最外层声明）。
+
+    var CSS = [
+      // 变量全部走 DSH 真实的 --dsw-alias-*，并给出硬编码 fallback。
+      // 2026-10-28 踩过的坑：一开始用的是另一套 --color-* 名字，DSH 里根本不存在，
+      // 结果颜色全回退、没有边框、也没有层次 —— 看起来像"裸控件"，但代码不报错。
+      '.soul-app{',
+      '--soul-fg:var(--dsw-alias-label-primary,#1f1c18);',
+      '--soul-muted:var(--dsw-alias-label-secondary,#6f6558);',
+      '--soul-faint:var(--dsw-alias-label-tertiary,#8a7f6e);',
+      '--soul-line:var(--dsw-alias-border-l2,#e3daca);',
+      '--soul-line-soft:var(--dsw-alias-border-l1,#ece5d8);',
+      '--soul-bg:var(--dsw-alias-bg-layer-1,#fffdf8);',
+      '--soul-bg2:var(--dsw-alias-bg-layer-2,#f4efe4);',
+      '--soul-brand:var(--dsw-alias-brand-primary,#1f6feb);',
+      '--soul-ok:var(--dsw-alias-state-success-primary,#2f6b46);',
+      '--soul-warn:var(--dsw-alias-state-warn-primary,#8a6a2f);',
+      '--soul-err:var(--dsw-alias-state-error-primary,#a83a2c);',
+      'font-family:var(--dsw-font-family-sans,var(--dsw-font-family,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif));',
+      'color:var(--soul-fg);font-size:13px;line-height:20px;box-sizing:border-box;max-width:100%;',
+      'border:1px solid var(--soul-line);border-radius:14px;overflow:hidden;background:rgba(127,127,127,.04)}',
+
+      '.soul-head{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;padding:16px 18px 12px;border-bottom:1px solid var(--soul-line);background:rgba(127,127,127,.025)}',
+      '.soul-kicker{margin:0 0 2px;font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--soul-faint)}',
+      '.soul-title{margin:0;font-size:17px;font-weight:600;line-height:24px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
+      '.soul-sub{margin:4px 0 0;font-size:12px;color:var(--soul-faint)}',
+      '.soul-dots{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap}',
+      '.soul-dot{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--soul-muted);background:rgba(127,127,127,.10);padding:3px 9px;border-radius:999px;white-space:nowrap}',
+      '.soul-dot i{width:7px;height:7px;border-radius:50%;background:#8a8f98;display:inline-block}',
+      '.soul-dot.ok i{background:#2fbf71}',
+      '.soul-dot.warn i{background:#ffb020}',
+      '.soul-dot.bad i{background:#ff5c5c}',
+
+      '.soul-tabs{display:flex;gap:2px;padding:8px 12px 0;border-bottom:1px solid var(--soul-line);overflow-x:auto;background:rgba(127,127,127,.02)}',
+      '.soul-tab{border:none;background:transparent;color:var(--soul-muted);font-size:12.5px;padding:8px 12px 9px;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap;border-radius:6px 6px 0 0;font-family:inherit}',
+      '.soul-tab:hover{background:rgba(127,127,127,.08);color:var(--soul-fg)}',
+      '.soul-tab.on{color:var(--soul-fg);border-bottom-color:var(--soul-brand);font-weight:600}',
+
+      '.soul-body{padding:14px 18px 16px;display:flex;flex-direction:column;gap:12px;max-height:min(64vh,720px);overflow:auto}',
+      '.soul-card{border:1px solid var(--soul-line-soft);border-radius:10px;padding:12px 13px;background:rgba(127,127,127,.03)}',
+      '.soul-card-h{display:flex;align-items:center;gap:8px;margin:0 0 8px;flex-wrap:wrap}',
+      '.soul-card-t{margin:0;font-size:13px;font-weight:600}',
+      '.soul-card-m{margin-left:auto;font-size:11px;color:var(--soul-faint)}',
+      '.soul-note{margin:5px 0 0;font-size:11.5px;line-height:17px;color:var(--soul-faint)}',
+      // 高级设置（2026-11-21 / 0.10.3）：默认收起。
+      // 「调坏了不报错、只会静悄悄出事」的参数放这里，点开才看得见。
+      '.soul-adv{margin-top:10px;border-top:.5px dashed var(--soul-line);padding-top:8px}',
+      '.soul-adv>summary{cursor:pointer;font-size:12px;color:var(--soul-faint);outline:none}',
+      '.soul-adv>summary:hover{color:var(--soul-muted)}',
+
+      '.soul-kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:.5px solid var(--soul-line-soft);font-size:12px}',
+      '.soul-kv:last-child{border-bottom:none}',
+      '.soul-kv>span{color:var(--soul-faint);flex:0 0 auto}',
+      '.soul-kv>b{font-weight:500;text-align:right;word-break:break-all}',
+
+      '.soul-meter{height:6px;border-radius:3px;background:rgba(127,127,127,.16);overflow:hidden;margin:7px 0 3px}',
+      '.soul-meter-fill{height:100%;border-radius:3px;background:var(--soul-brand);transition:width .18s ease}',
+      '.soul-meter-fill.warn{background:#ffb020}',
+      '.soul-meter-fill.bad{background:#ff5c5c}',
+
+      '.soul-badge{font-size:11px;padding:1px 7px;border-radius:6px;white-space:nowrap;background:rgba(127,127,127,.12);color:var(--soul-muted)}',
+      '.soul-badge.vivid{background:rgba(47,191,113,.15);color:#1f7a4d}',
+      '.soul-badge.clear{background:rgba(31,111,235,.13);color:#1f6feb}',
+      '.soul-badge.fuzzy{background:rgba(255,176,32,.17);color:#8a6a2f}',
+      '.soul-badge.trace{background:rgba(255,92,92,.14);color:#a83a2c}',
+
+      '.soul-list{display:flex;flex-direction:column;gap:6px;margin-top:8px}',
+      // 长列表自己滚（2026-11-09）：日记 / 记忆 / 笔记 / 惦记的事条目一多，
+      // 整页被撑得很长，要划半天才能看到下一张卡片。这里给它们一个**有界高度**，
+      // 跟心情页时间线（.soul-tl）同样的做法。
+      // overscroll-behavior:contain —— 滚到底时不把滚动传给外层，免得整页突然跳走。
+      '.soul-list-fixed{max-height:min(46vh,420px);overflow:auto;overscroll-behavior:contain;padding-right:4px}',
+      '.soul-item{display:flex;gap:8px;align-items:flex-start;border:1px solid var(--soul-line-soft);border-radius:8px;padding:9px 10px;background:var(--soul-bg)}',
+      '.soul-item:hover{border-color:var(--soul-line)}',
+      '.soul-item-text{flex:1 1 auto;min-width:0;word-break:break-word}',
+      '.soul-meta{margin-top:3px;font-size:11px;line-height:16px;color:var(--soul-faint)}',
+
+      '.soul-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
+      '.soul-grow{flex:1 1 auto;min-width:0}',
+      '.soul-btn{font-family:inherit;font-size:12px;line-height:18px;padding:4px 10px;border:1px solid var(--soul-line);background:var(--soul-bg);color:var(--soul-fg);border-radius:6px;cursor:pointer;white-space:nowrap}',
+      '.soul-btn:hover{background:rgba(127,127,127,.09);border-color:var(--soul-muted)}',
+      '.soul-btn.on{background:var(--soul-brand);border-color:var(--soul-brand);color:#fff}',
+      '.soul-btn.danger{color:var(--soul-err)}',
+      '.soul-btn.danger:hover{background:rgba(255,92,92,.10);border-color:var(--soul-err)}',
+
+      '.soul-input,.soul-textarea{width:100%;box-sizing:border-box;font-family:inherit;font-size:12.5px;padding:6px 9px;border:1px solid var(--soul-line);border-radius:7px;background:var(--soul-bg);color:var(--soul-fg)}',
+      '.soul-input:focus,.soul-textarea:focus{outline:none;border-color:var(--soul-brand)}',
+      '.soul-textarea{min-height:300px;resize:vertical;line-height:1.65;font-family:var(--dsw-font-family-mono,ui-monospace,SFMono-Regular,Menlo,monospace)}',
+
+      '.soul-empty{padding:18px 0;text-align:center;font-size:12px;color:var(--soul-faint)}',
+      '.soul-err{margin:0;padding:6px 0;font-size:12px;color:var(--soul-err)}',
+      '.soul-pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--soul-line-soft);color:var(--soul-muted);white-space:nowrap}',
+      '.soul-hint{font-size:11px;color:var(--soul-faint)}',
+
+      '.soul-banner{border:1px solid var(--soul-line-soft);border-radius:9px;padding:8px 11px;background:rgba(127,127,127,.05)}',
+      '.soul-banner-line{display:flex;gap:10px;padding:3px 0;font-size:12px;align-items:flex-start}',
+      '.soul-banner-key{flex:0 0 92px;color:var(--soul-faint);white-space:nowrap}',
+      '.soul-banner-val{flex:1 1 auto;min-width:0;word-break:break-all;color:var(--soul-fg)}',
+      '.soul-banner-val.warn{color:var(--soul-warn)}',
+      '.soul-steps{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:9px 11px;border:1px solid var(--soul-line-soft);border-radius:9px;background:rgba(127,127,127,.02)}',
+      '.soul-step{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:6px;border:1px solid transparent;font-size:12px;color:var(--soul-faint)}',
+      '.soul-step.on{background:rgba(47,191,113,.13);color:#1f7a4d;border-color:rgba(47,191,113,.32)}',
+      '.soul-step.eff{font-weight:600}',
+      '.soul-step i{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.55;display:inline-block}',
+      '.soul-arrow{color:var(--soul-faint);font-size:12px;padding:0 1px}',
+      '.soul-pill-tab{font-family:inherit;font-size:12.5px;padding:5px 13px;border-radius:999px;border:1px solid var(--soul-line);background:var(--soul-bg);color:var(--soul-muted);cursor:pointer}',
+      '.soul-pill-tab:hover{border-color:var(--soul-muted);color:var(--soul-fg)}',
+      '.soul-pill-tab.on{background:var(--soul-brand);border-color:var(--soul-brand);color:#fff;font-weight:600}',
+      '.soul-pill-tab:disabled{opacity:.45;cursor:not-allowed}',
+      '.soul-switch{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--soul-muted);cursor:pointer;white-space:nowrap}',
+      '.soul-switch input{appearance:none;-webkit-appearance:none;width:34px;height:19px;border-radius:10px;background:rgba(127,127,127,.30);position:relative;cursor:pointer;transition:background .15s;margin:0;border:none;flex:0 0 auto}',
+      '.soul-switch input:checked{background:var(--soul-brand)}',
+      '.soul-switch input::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;transition:transform .15s}',
+      '.soul-switch input:checked::after{transform:translateX(15px)}',
+      '.soul-select{font-family:inherit;font-size:12px;padding:5px 8px;border:1px solid var(--soul-line);border-radius:7px;background:var(--soul-bg);color:var(--soul-fg);flex:1 1 auto;min-width:0;max-width:100%}',
+      '.soul-row-label{flex:0 0 52px;font-size:12px;color:var(--soul-faint);white-space:nowrap}',
+      '.soul-filebar{display:flex;align-items:center;gap:10px;padding:7px 10px;border:1px solid var(--soul-line-soft);border-radius:8px;background:rgba(127,127,127,.04);font-size:11.5px;color:var(--soul-faint);flex-wrap:wrap}',
+      '.soul-filebar-path{flex:1 1 auto;min-width:0;word-break:break-all;font-family:var(--dsw-font-family-mono,ui-monospace,Menlo,monospace);color:var(--soul-muted)}',
+      '.soul-section-title{font-size:14px;font-weight:600;margin:0}',
+      '.soul-legend{display:flex;gap:9px;align-items:flex-start;padding:8px 0;border-bottom:.5px solid var(--soul-line-soft)}',
+      '.soul-legend:last-child{border-bottom:none}',
+      '.soul-lv{flex:0 0 auto;width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:600;background:rgba(127,127,127,.14);color:var(--soul-muted);margin-top:1px}',
+      '.soul-legend.on .soul-lv{background:var(--soul-brand);color:#fff}',
+      '.soul-legend-body{flex:1 1 auto;min-width:0}',
+      '.soul-legend-name{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12.5px}',
+      '.soul-path{margin-top:2px;font-size:11px;line-height:15px;color:var(--soul-faint);word-break:break-all;font-family:var(--dsw-font-family-mono,ui-monospace,Menlo,monospace)}',
+      '.soul-warn-box{margin-top:9px;padding:8px 10px;border:1px solid rgba(255,176,32,.45);border-radius:8px;background:rgba(255,176,32,.10);font-size:11.5px;line-height:17px;color:var(--soul-warn)}',
+      '.soul-btn:disabled{opacity:.45;cursor:not-allowed}',
+      '.soul-priority{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--soul-faint)}',
+
+      // 版权：心情页样式与表情图派生自 dsh-feiyu-mood（原作者 Yuuyuko-uu，
+      // 《Yuuyuko-uu 插件许可 1.2》，见 THIRD-PARTY-NOTICES.md §3.1）。
+      // 心情页（参考 feiyu-mood 的布局：大数字 hero + 七情 + 时间线 + 判断配置）
+      '.soul-mood-hero{display:flex;align-items:center;gap:14px;flex-wrap:wrap}',
+      // 心情脸：跟原 dsh-feiyu-mood 同一张图（84×66 的比例），圆角 + 浅底跟它保持一致
+      '.soul-mood-face img{width:104px;height:82px;object-fit:contain;border-radius:10px;background:rgba(127,127,127,.10);display:block}',
+      '.soul-mood-num{font-size:34px;font-weight:650;line-height:1;letter-spacing:-.02em}',
+      '.soul-mood-label{font-size:13px;color:var(--soul-muted);margin-top:3px}',
+      '.soul-mood-reason{flex:1 1 220px;min-width:0;font-size:12px;line-height:18px;color:var(--soul-muted);border-left:2px solid var(--soul-line);padding-left:10px}',
+      '.soul-dim{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px}',
+      '.soul-dim-name{flex:0 0 46px;color:var(--soul-faint)}',
+      '.soul-dim-val{flex:0 0 30px;text-align:right;color:var(--soul-muted)}',
+      '.soul-tl{display:flex;flex-direction:column;gap:0;max-height:320px;overflow:auto}',
+      '.soul-tl-item{display:flex;gap:9px;padding:8px 2px;border-bottom:.5px solid var(--soul-line-soft);font-size:11.5px;line-height:17px}',
+      '.soul-tl-item:last-child{border-bottom:none}',
+      '.soul-tl-time{flex:0 0 88px;color:var(--soul-faint);white-space:nowrap}',
+      '.soul-tl-delta{flex:0 0 40px;text-align:right;font-weight:600}',
+      '.soul-tl-delta.up{color:#c0392b}',
+      '.soul-tl-delta.down{color:#2f6b46}',
+      '.soul-tl-body{flex:1 1 auto;min-width:0;color:var(--soul-muted);word-break:break-word}',
+
+      // 宿主一个 --dsw-* 都没提供时的兜底（极少数情况，比如自定义主题）
+      '@supports not (color:var(--dsw-alias-label-primary)){.soul-app{--soul-fg:#241f18;--soul-muted:#6f6558;--soul-faint:#9a9084;--soul-line:#e0d7c8;--soul-line-soft:#ece5d8;--soul-bg:#fffdf8;--soul-bg2:#f6f2ea;--soul-brand:#1f6feb;--soul-ok:#2f6b46;--soul-warn:#8a6a2f;--soul-err:#a83a2c}}'
+    ].join('\n')
+
+    function ensureStyles(ctx) {
+      var id = 'dsh-agent-soul-styles'
+      if (document.getElementById(id) !== null) return function () {}
+      var style = document.createElement('style')
+      style.id = id
+      style.textContent = CSS
+      document.head.appendChild(style)
+      return function () {
+        var el = document.getElementById(id)
+        if (el !== null && el.parentNode !== null) el.parentNode.removeChild(el)
+      }
+    }
+
+// ---- 同源 API ---------------------------------------------------------
+    // 片段：运行在 client.js 工厂函数作用域内。与宿主只走同源 HTTP（/api/soul/*），
+    // 不碰 RPC：浏览器半侧只要能 fetch 就能用，插件卸载/重装时页面顶多拿到 404。
+
+    var API = '/api/soul'
+    var TOKEN_HEADER = 'x-soul-token'
+
+    // 2026-11-05 修 P0-1 余下：每个请求都要带会话令牌。
+    // 默认由 /session 同源下发（进程内随机，重启即换）；宿主若能注入运行时值，
+    // 可用 globalThis.__SOUL_API_TOKEN__ 配合服务端 DSH_SOUL_API_TOKEN 固定模式。
+    var tokenValue = (typeof globalThis !== 'undefined' && typeof globalThis.__SOUL_API_TOKEN__ === 'string')
+      ? globalThis.__SOUL_API_TOKEN__ : ''
+    var tokenPending = null
+
+    function readJson(res) {
+      return res.text().then(function (text) {
+        var data = null
+        try { data = text === '' ? null : JSON.parse(text) } catch (e) { data = null }
+        if (!res.ok) {
+          var err = new Error(data && data.error ? data.error : 'HTTP ' + res.status)
+          err.status = res.status
+          throw err
+        }
+        return data
+      })
+    }
+
+    function timeoutSignal(ms) {
+      if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+        return AbortSignal.timeout(ms)
+      }
+      return undefined
+    }
+
+    /** 拿会话令牌；并发的首次请求共用一个 Promise，避免首屏打出一排 /session。 */
+    function bootstrapToken() {
+      if (tokenPending !== null) return tokenPending
+      var init = { method: 'GET', cache: 'no-store' }
+      var signal = timeoutSignal(8000)
+      if (signal) init.signal = signal
+      tokenPending = fetch(API + '/session', init).then(readJson).then(function (data) {
+        tokenValue = (data && typeof data.token === 'string') ? data.token : ''
+        tokenPending = null
+        return tokenValue
+      }, function (error) {
+        tokenPending = null
+        throw error
+      })
+      return tokenPending
+    }
+
+    function withToken(init) {
+      var opts = init || {}
+      var headers = opts.headers || {}
+      if (tokenValue !== '') headers[TOKEN_HEADER] = tokenValue
+      else delete headers[TOKEN_HEADER]
+      opts.headers = headers
+      if (!opts.signal) {
+        var signal = timeoutSignal(15000)
+        if (signal) opts.signal = signal
+      }
+      return opts
+    }
+
+    /** 统一请求出口：首取令牌 → 带令牌请求 → 401 时换一次令牌重试（服务端重启）。 */
+    function request(path, init, retried) {
+      var ready = tokenValue !== '' ? Promise.resolve(tokenValue) : bootstrapToken()
+      return ready.then(function () {
+        return fetch(API + path, withToken(init))
+      }).then(function (res) {
+        if (res.status === 401 && !retried) {
+          tokenValue = ''
+          return request(path, init, true)
+        }
+        return readJson(res)
+      })
+    }
+
+    function apiGet(path) {
+      return request(path, { cache: 'no-store' }, false)
+    }
+    function apiPost(path, body) {
+      return request(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body || {}),
+      }, false)
+    }
+
+    /**
+     * 2026-11-07 R8 / P2-25：**防抖的 POST**。
+     *
+     * 设置页的文本输入框原来每敲一键就 POST 一次全量配置 —— 打一行字发十几次请求，
+     * 而且请求乱序时后发先至，最后落盘的可能是中间某个状态。
+     * 这里按 key 合并：同一个 key（比如同一个输入框）在窗口内的多次调用只发最后一次。
+     *
+     * 返回一个 Promise：窗口结束、真正发出后 resolve（apiPost 的结果）；
+     * 中途被新调用取代时 resolve({ merged: true })（不 reject）。
+     * 2026-11-10 R20-B（审查 M25）：原来 resolve(null) 且注释让调用方「照旧显示已保存」——
+     * 被合并掉的请求从没发出去，却先弹「已保存」再拉一次 /state；真正发出的那次若失败，
+     * 用户已经看到过若干次假成功。现在调用方必须区分 merged（静默返回，不提示不刷新）。
+     */
+    var pendingPosts = {}
+    function apiPostDebounced(key, path, body, waitMs) {
+      var delay = typeof waitMs === 'number' && waitMs >= 0 ? waitMs : 300
+      var slot = pendingPosts[key]
+      if (slot) {
+        clearTimeout(slot.timer)
+        if (typeof slot.resolve === 'function') slot.resolve({ merged: true })
+      }
+      return new Promise(function (resolve, reject) {
+        var entry = { resolve: resolve, reject: reject, timer: null }
+        entry.timer = setTimeout(function () {
+          if (pendingPosts[key] === entry) delete pendingPosts[key]
+          apiPost(path, body).then(resolve).catch(reject)
+        }, delay)
+        pendingPosts[key] = entry
+      })
+    }
+
+    /** 从会话上下文里刨出 cwd —— 刨不到就全局视图，再不够还有服务端兜底与手选。 */
+    function cwdOf(props) {
+      var p = props || {}
+      var candidates = [
+        p.cwd,
+        p.session && p.session.header && p.session.header.cwd,
+        p.session && p.session.cwd,
+        p.agent && p.agent.session && p.agent.session.header && p.agent.session.header.cwd,
+      ]
+      for (var i = 0; i < candidates.length; i += 1) {
+        if (typeof candidates[i] === 'string' && candidates[i] !== '') return candidates[i]
+      }
+      return ''
+    }
+
+    /**
+     * 服务端兜底出来的工作区（/state 里带回来的）。
+     *
+     * 2026-10-29：本页拿不到会话 cwd 时，各标签页原来各自拿着空串去请求，
+     * 于是概览拿到 80、心情详情拿到空白 70 —— 同一个页面两个数字。
+     * 服务端已经兜过底了，页面就把这个结果沿用下去，保证各标签页看的是同一份。
+     */
+    function serverCwdOf(props) {
+      var ws = props && props.state && props.state.workspace
+      return ws && typeof ws.cwd === 'string' ? ws.cwd : ''
+    }
+
+    /** 当前标签页该用的 cwd：页面自己有的优先，没有就沿用服务端兜底的那个。 */
+    function cwdWithFallback(props) {
+      var own = cwdOf(props)
+      return own !== '' ? own : serverCwdOf(props)
+    }
+
+    /**
+     * 当前会话 id（2026-10-31）。
+     *
+     * 设置页是全局弹层，这个 DSH 版本的 renderSlot('settings.section') 只传
+     * { close }，所以 props 里通常没有会话；拿不到就返回空串，由后端
+     * /diary/bind 兜底成「最近更新的会话」，绑定结果会回显 id 供核对。
+     */
+    function sessionIdOf(props) {
+      var p = props || {}
+      var candidates = [
+        p.sessionId,
+        p.session && p.session.header && p.session.header.id,
+        p.session && p.session.id,
+        p.agent && p.agent.session && p.agent.session.header && p.agent.session.header.id,
+      ]
+      for (var i = 0; i < candidates.length; i += 1) {
+        if (typeof candidates[i] === 'string' && candidates[i] !== '') return candidates[i]
+      }
+      return ''
+    }
+
+    /** ISO 时间 → 「10月26日 12:48」（设置页文件栏用）。 */
+    function timeLabel(iso) {
+      if (!iso) return ''
+      var d = new Date(iso)
+      if (isNaN(d.getTime())) return ''
+      var pad = function (n) { return (n < 10 ? '0' : '') + n }
+      return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
+    }
+
+// ---- 小组件 -----------------------------------------------------------
+    // 片段：运行在 client.js 工厂函数作用域内。可用：h / React。
+
+    var CLARITY_LABEL = { vivid: '清晰', clear: '清楚', fuzzy: '模糊', trace: '只剩印象', forgotten: '已遗忘' }
+    var NEED_LABEL = { curiosity: '想弄明白', care: '在乎', share: '想分享', mastery: '想搞懂' }
+    var KIND_LABEL = { question: '想弄明白', promise: '答应过的', curious: '想试试', followup: '还没聊完' }
+    // 七情顺序跟 lib/mood.js 的 DIMS 一致（界面按这个排）
+    var MOOD_DIMS = [
+      ['happy', '开心'], ['calm', '踏实'], ['sweet', '甜蜜'], ['heartache', '心疼'],
+      ['worry', '担心'], ['sad', '难过'], ['jealous', '吃醋'],
+    ]
+    // 心情表情图的地址前缀：由 lib/api.js 的 registerAssets 注册出去（跟 ASSET_PREFIX 对齐）
+    var MOOD_FACE_URL = '/dsh-agent-soul/face-'
+
+    function Badge(props) {
+      return h('span', { className: 'soul-badge ' + (props.clarity || '') }, props.children)
+    }
+
+    function Card(props) {
+      return h('div', { className: 'soul-card' },
+        props.title
+          ? h('div', { className: 'soul-card-h' },
+            h('p', { className: 'soul-card-t' }, props.title),
+            props.meta ? h('span', { className: 'soul-card-m' }, props.meta) : null
+          )
+          : null,
+        props.children
+      )
+    }
+
+    /** 状态点：绿=正常、黄=要留意、红=有问题。 */
+    function Dot(props) {
+      return h('span', { className: 'soul-dot ' + (props.tone || '') },
+        h('i', null),
+        props.children
+      )
+    }
+
+    /** 药丸页签（跟原人格插件一致的交互）。 */
+    function Pill(props) {
+      return h('button', {
+        className: 'soul-pill-tab' + (props.active ? ' on' : ''),
+        disabled: props.disabled === true,
+        title: props.title || '',
+        onClick: props.onClick,
+      }, props.children)
+    }
+
+    /** 开关（带文字状态，比裸 checkbox 清楚）。 */
+    function Switch(props) {
+      return h('label', { className: 'soul-switch' },
+        h('input', {
+          type: 'checkbox',
+          checked: props.checked === true,
+          disabled: props.disabled === true,
+          onChange: props.onChange,
+        }),
+        h('span', null, props.label)
+      )
+    }
+
+    /** 一行键值（比裸 div 好读）。 */
+    function Kv(props) {
+      return h('div', { className: 'soul-kv' },
+        h('span', null, props.label),
+        h('b', null, props.value)
+      )
+    }
+
+﻿// ---- 概览 -------------------------------------------------------------
+    // 片段：运行在 client.js 工厂函数作用域内。可用：h / Card / Badge / 各标签常量。
+
+    function OverviewTab(props) {
+      var state = props.state
+      if (state === null) return h('div', { className: 'soul-empty' }, '正在加载…')
+      var mem = state.memory || {}
+      var g = mem.global || {}
+      var p = mem.project
+      var purpose = state.purpose || {}
+      var sources = (state.persona && state.persona.sources) || []
+      var ratio = Math.round((g.ratio || 0) * 100)
+      // 2026-10-31：「最近」那张卡要用的三样。都必须给默认值 ——
+      // 少一个就是 undefined，React 渲染时整页白屏（问题库 Q37）。
+      var mood = state.mood || null
+      var diary = state.diary || null
+      var config = state.config || {}
+
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+        h(Card, { title: '这一刻生效了什么' },
+          h('p', { className: 'soul-note' }, '人格来源：' + (sources.length === 0 ? '还没写人格文件' : sources.length + ' 份')),
+          sources.length > 0
+            ? h('div', { className: 'soul-list' }, sources.map(function (src, i) {
+              return h('div', { key: i, className: 'soul-item' },
+                h('span', { className: 'soul-item-text', style: { fontSize: 12 } }, src)
+              )
+            }))
+            : h('p', { className: 'soul-note' }, '去「人格」标签写一份，或者在 ' + '~/.dsh/AGENT.md 里写'),
+          h('p', { className: 'soul-meta' }, '合并模式：' + (state.persona && state.persona.mode === 'exclusive' ? '互斥（有项目就不注入全局）' : '叠加（项目覆盖同名小节，全局其余照常生效）') + ' · 正文 ' + ((state.persona && state.persona.chars) || 0) + ' 字')
+        ),
+
+        h(Card, { title: '记忆' },
+          h('div', { className: 'soul-row', style: { marginBottom: 8 } },
+            h('div', { className: 'soul-grow' },
+              h('div', { className: 'soul-row' },
+                h('span', { style: { fontWeight: 500 } }, String(g.count || 0) + ' 条'),
+                h('span', { className: 'soul-pill' }, '固定 ' + (g.pinned || 0)),
+                p ? h('span', { className: 'soul-pill' }, '本项目 ' + (p.count || 0)) : null
+              ),
+              h('div', { className: 'soul-meter', style: { marginTop: 6 } },
+                h('div', { className: 'soul-meter-fill', style: { width: Math.min(100, ratio) + '%' } })
+              ),
+              h('p', { className: 'soul-meta' }, (g.chars || 0) + ' / ' + (g.warnChars || 0) + ' 字（' + ratio + '%）' + (g.level === 'ok' ? '' : ' · 该整理了'))
+            )
+          ),
+          h('div', { className: 'soul-row', style: { gap: 6 } },
+            Object.keys(g.byClarity || {}).filter(function (k) { return g.byClarity[k] > 0 }).map(function (k) {
+              return h(Badge, { key: k, clarity: k }, CLARITY_LABEL[k] + ' ' + g.byClarity[k])
+            })
+          ),
+          h('p', { className: 'soul-meta' }, '上次整理：' + (g.lastDecayDate || '还没跑过'))
+        ),
+
+        h(Card, { title: '心里惦记的事' },
+          purpose.mood
+            ? h('div', { className: 'soul-row' },
+              h('span', { className: 'soul-pill' }, '状态：' + purpose.mood.label),
+              h('span', { className: 'soul-pill' }, '待办 ' + (purpose.open || 0) + ' 件')
+            )
+            : null,
+          (purpose.goals || []).length === 0
+            ? h('p', { className: 'soul-note', style: { marginTop: 6 } }, '暂时没惦记什么。她答应过的事、没弄明白的事会自动长出来。')
+            : h('div', { className: 'soul-list' }, (purpose.goals || []).slice(0, 5).map(function (goal) {
+              return h('div', { key: goal.id, className: 'soul-item' },
+                h('span', { className: 'soul-badge' }, KIND_LABEL[goal.kind] || '想试试'),
+                h('span', { className: 'soul-item-text' }, goal.text)
+              )
+            })),
+          h('div', { className: 'soul-row', style: { marginTop: 8 } },
+            Object.keys(purpose.drives || {}).map(function (need) {
+              var value = purpose.drives[need] || 0
+              return h('div', { key: need, style: { flex: '1 1 100px', minWidth: 90 } },
+                h('span', { className: 'soul-meta' }, NEED_LABEL[need] + ' ' + Math.round(value * 100)),
+                h('div', { className: 'soul-meter', style: { marginTop: 3 } },
+                  h('div', { className: 'soul-meter-fill', style: { width: Math.round(value * 100) + '%' } })
+                )
+              )
+            })
+          )
+        ),
+
+        // ---- 最近（2026-10-31 新增）----
+        //
+        // 原来要看「这一周心情怎么走的、摘录写没写」，得在心情页和摘录页之间来回切。
+        // 这里并一块：心情一行、摘录一行。不追求好看，只求一眼看完。
+        h(Card, { title: '最近' },
+          h('div', { className: 'soul-row', style: { padding: '4px 0' } },
+            h('span', { className: 'soul-grow' }, '心情'),
+            mood && typeof mood.mood === 'number'
+              ? h('span', { className: 'soul-pill' }, '现在 ' + Math.round(mood.mood))
+              : h('span', { className: 'soul-meta' }, '还没有记录'),
+            mood && mood.peakLabel
+              ? h('span', { className: 'soul-meta', style: { marginLeft: 8 } }, '高峰 ' + mood.peakLabel)
+              : null
+          ),
+          mood && mood.note
+            ? h('p', { className: 'soul-note', style: { margin: '2px 0 6px' } }, String(mood.note).slice(0, 80))
+            : null,
+          h('div', { className: 'soul-row', style: { padding: '4px 0', borderTop: '1px solid rgba(128,128,128,.15)' } },
+            h('span', { className: 'soul-grow' }, '昨天那篇摘录'),
+            diary && diary.yesterdayDone
+              ? h('span', { className: 'soul-pill' }, (diary.yesterday || '昨天') + ' 已写')
+              : h('span', { className: 'soul-pill' }, (diary && diary.yesterday ? diary.yesterday : '昨天') + ' 还没写'),
+            diary && Number(diary.sessionDays) > 0
+              ? h('span', {
+                  className: 'soul-pill',
+                  style: {
+                    marginLeft: 8,
+                    color: Number(diary.sessionDays) > 15 ? '#ffb020' : undefined,
+                  },
+                }, '摘录本 ' + Number(diary.sessionDays) + ' 天')
+              : null
+          ),
+          h('p', { className: 'soul-meta' },
+            '规则：开机时写前一天那篇摘录；一直不关机的话，每 '
+            + ((config && config.diaryWatchdogMinutes) || 30) + ' 分钟兜底看一眼。'),
+          // 记忆卡读坏过：必须亮红，不许只写进日志（2026-11-01 审计 A1）
+          mem.health
+            ? h('p', { className: 'soul-note', style: { margin: '4px 0 0', color: '#d9534f' } },
+                '记忆卡上次读取失败（' + String(mem.health.reason || '格式损坏') + '）：'
+                + (mem.health.backup
+                  ? '原文件已另存为 ' + String(mem.health.backup).split(/[\\/]/).pop() + '，新卡从这里重新开始记。'
+                  : '原文件无法备份，记忆卡进入只读模式，新的记忆暂时写不进去。'))
+            : null,
+          // 宿主形状自检没过：这是最阴的一种坏法（扫描在跑、候选恒 0、日志不报）
+          // （2026-11-01 审计 C7）
+          state.host && Array.isArray(state.host.failed) && state.host.failed.length > 0
+            ? h('p', { className: 'soul-note', style: { margin: '4px 0 0', color: '#d9534f' } },
+                '宿主接口变了（' + state.host.failed.map((x) => x.name).join('、')
+                + '）：记忆和心情会静默失效，需要按新版事件形状改 lib/core/host.js。')
+            : null
+        ),
+
+        // ---- 语音（待开发）----
+        //
+        // 2026-11-01：试了一轮，先放下。这里**故意不放任何输入框** ——
+        // 改不动的旋钮比没有旋钮更糟（同一天刚删掉一个「摘要上限」）。
+        // 这块牌子的作用是：下次想动手时，不用把踩过的坑重新踩一遍。
+        h(Card, { title: '语音', meta: '待开发' },
+          h('p', { className: 'soul-note', style: { margin: '6px 0 4px' } },
+            '想法：平时照旧打字，到了该出声的时候才出声（比如半夜那句「去躺着」）。'),
+          h('p', { className: 'soul-note', style: { margin: '2px 0' } },
+            '试过的：CosyVoice2 的 8 个预设音色全量过了一遍（同一句话，量了基频/语速/音高跨度）。'
+            + '结论是这批音色都是「播音腔」—— 音高跨度 8 个半音以上、每个标点都干净停顿，'
+            + '换哪个都像有人替糖糖念稿。用 ffmpeg 降调提速也救不回来，会有金属味。'),
+          h('p', { className: 'soul-note', style: { margin: '2px 0' } },
+            '卡在哪：音色克隆要克隆一段「已经存在的声音」，可糖糖没有原声；'
+            + '而播音腔改不掉是因为它是念稿，不是说话。'),
+          h('p', { className: 'soul-note', style: { margin: '2px 0' } },
+            '下一步（真的要做的时候）：本地 GPT-SoVITS，4060 8G 够跑，'
+            + '从基础音色开始一点点调音高/语速/语气，调到「是她」为止。'
+            + '这是周末活，不是一百行代码。'),
+          h('p', { className: 'soul-meta', style: { margin: '6px 0 0' } },
+            '这里没有任何可调项 —— 因为现在改了不会有任何效果。')
+        )
+      )
+    }
+
+// ---- 人格 -------------------------------------------------------------
+    // 片段：运行在 client.js 工厂函数作用域内。
+    // 可用：h / Card / Pill / Switch / apiGet / apiPost / useState / useEffect /
+    //       useCallback / timeLabel。
+
+    /**
+     * 人格页 —— 布局照着 dsh-agent-md 的来（横幅 + 横向优先级条 + 药丸页签）。
+     *
+     * 为什么抄它的布局而不是自己另设计一套：
+     *   用户在这个页面上已经形成肌肉记忆了 ——「本会话当前生效」在哪、页签在哪、
+     *   打开原文件在哪。换插件时把这些位置全改掉，等于让人重新学一遍。
+     *   差异只应该出现在**内容**上（叠加 vs 互斥、三层各自的路径与状态）。
+     */
+    function PersonaTab(props) {
+      var workspace = props.workspace || null
+      var config = props.config || {}
+      var workspaces = props.workspaces || []
+      // 项目人格不再灰：就算宿主没传 cwd，也能从下拉/任意目录里挑（学 dsh-agent-md）
+      var [kind, setKind] = useState('global')
+      var [text, setText] = useState('')
+      var [path, setPath] = useState('')
+      var [updatedAt, setUpdatedAt] = useState(null)
+      var [status, setStatus] = useState('')
+      var [loading, setLoading] = useState(false)
+      var [busy, setBusy] = useState('')
+      var [projectCwd, setProjectCwd] = useState('')
+      var [pathDraft, setPathDraft] = useState('')
+      var enabled = config.enabled !== false
+
+      // 首帧之后把「宿主/服务端解析到的工作目录」种进 projectCwd（下拉默认选中它）
+      useEffect(function () {
+        if (projectCwd === '') {
+          var seed = props.cwd || (workspace && workspace.cwd) || ''
+          if (seed !== '') setProjectCwd(seed)
+        }
+      }, [props.cwd, workspace])
+
+      // 正在编辑哪一份：全局不挑 cwd，项目用 projectCwd
+      var effCwd = kind === 'project' ? projectCwd : ''
+
+      var load = useCallback(function () {
+        setLoading(true)
+        setStatus('')
+        apiGet('/persona?kind=' + kind + (effCwd ? '&cwd=' + encodeURIComponent(effCwd) : ''))
+          .then(function (data) {
+            setText(data.text || '')
+            setPath(data.path || '')
+            setUpdatedAt(data.updatedAt || null)
+          })
+          .catch(function (e) { setStatus('读取失败：' + e.message) })
+          .then(function () { setLoading(false) })
+      }, [kind, effCwd])
+
+      useEffect(function () { load() }, [load])
+
+      function save() {
+        setStatus('保存中…')
+        apiPost('/persona', { kind: kind, cwd: effCwd, text: text })
+          .then(function (data) { setStatus('已保存（' + data.chars + ' 字），下一个回合生效') })
+          .catch(function (e) { setStatus('保存失败：' + e.message) })
+      }
+
+      function openFile() {
+        setStatus('正在打开…')
+        apiPost('/open', { kind: kind, cwd: effCwd })
+          .then(function () { setStatus('已在文件管理器中选中') })
+          .catch(function (e) { setStatus(e.message) })
+      }
+
+      /** 让宿主弹系统「选择文件夹」，结果填进输入框（不直接切，防手滑）。 */
+      function doPick() {
+        setBusy('pick')
+        apiPost('/pick', {})
+          .then(function (res) {
+            if (res && res.picked) {
+              setPathDraft(res.picked)
+              setStatus('已选中：' + res.picked + '（再点「使用」切过去）')
+            } else {
+              setStatus('取消选择')
+            }
+          })
+          .catch(function (e) { setStatus('打不开选择器：' + e.message) })
+          .then(function () { setBusy('') })
+      }
+
+      /** 用手填/选中的目录当工作区（登记 + 切过去 + 拉它的项目人格）。 */
+      function usePickedCwd() {
+        var cwd = pathDraft.trim()
+        if (cwd === '') {
+          setStatus('先填一个目录，或者点「选择文件夹」。')
+          return
+        }
+        setBusy('pick')
+        apiPost('/register', { cwd: cwd, active: true })
+          .then(function () {
+            setProjectCwd(cwd)
+            setKind('project')
+            if (typeof props.onSelectCwd === 'function') props.onSelectCwd(cwd)
+            setStatus('已切到工作区：' + cwd)
+          })
+          .catch(function (e) { setStatus('登记失败：' + e.message) })
+          .then(function () { setBusy('') })
+      }
+
+      function toggleEnabled(next) {
+        // 2026-11-08 KNOWN-ISSUES #22：只发改动的键，不发旧快照全量（服务端按 key 合并）
+        apiPost('/config', { config: { enabled: next } })
+          .then(function () {
+            setStatus(next ? '已启用，下一个回合生效' : '已停用 —— 不会再注入任何人格')
+            if (typeof props.reload === 'function') props.reload()
+          })
+          .catch(function (e) { setStatus('切换失败：' + e.message) })
+      }
+
+      var layers = (workspace && workspace.layers) || []
+      var byLevel = {}
+      layers.forEach(function (layer) { byLevel[layer.level] = layer })
+
+      // 项目层实际生效的是哪一份（1 优先于 2）—— 结论由宿主算好，这里只负责显示
+      var effProject = null
+      if (workspace && workspace.projectEffective === 'local') effProject = byLevel[1]
+      if (workspace && workspace.projectEffective === 'stored') effProject = byLevel[2]
+      var effectiveText
+      if (!enabled) effectiveText = '人格已停用 —— 当前不会注入任何人格'
+      else if (effProject) effectiveText = effProject.name + ' · ' + effProject.path + '（＋叠加全局底座）'
+      else if (byLevel[3] && byLevel[3].exists) effectiveText = '全局人格 · ' + byLevel[3].path
+      else effectiveText = '尚未写入任何人格（写一份即生效）'
+
+      /** 横向优先级条：每一步带「有 / 没有」，正在生效的那步加粗。 */
+      function step(level) {
+        var layer = byLevel[level]
+        if (layer === undefined) return null
+        var isEff = effProject !== null && effProject.level === level
+          || (effProject === null && level === 3 && byLevel[3] && byLevel[3].exists && enabled)
+        return h('span', {
+          key: 'l' + level,
+          className: 'soul-step' + (layer.exists ? ' on' : '') + (isEff ? ' eff' : ''),
+          title: layer.path ? layer.path + '\n' + layer.scope : layer.scope,
+        }, h('i', null), layer.name)
+      }
+
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 11 } },
+
+        // ---- 头部：标题 + 总开关 ----
+        h('div', { className: 'soul-row' },
+          h('div', { className: 'soul-grow' },
+            h('p', { className: 'soul-section-title' }, '人格 · AGENT.md'),
+            h('p', { className: 'soul-note' }, '用 Markdown 写她是谁。项目里只写和其它项目不同的部分，其余从全局继承。')
+          ),
+          h(Switch, {
+            checked: enabled,
+            label: enabled ? '已启用' : '已停用',
+            onChange: function (e) { toggleEnabled(e.target.checked) },
+          })
+        ),
+
+        // ---- 横幅：本会话当前生效 / 当前工作目录 ----
+        h('div', { className: 'soul-banner' },
+          h('div', { className: 'soul-banner-line' },
+            h('span', { className: 'soul-banner-key' }, '本会话当前生效'),
+            h('span', { className: 'soul-banner-val' + (enabled && effectiveText.indexOf('尚未') === 0 ? ' warn' : '') }, effectiveText)
+          ),
+          h('div', { className: 'soul-banner-line' },
+            h('span', { className: 'soul-banner-key' }, '当前工作目录'),
+            h('span', { className: 'soul-banner-val' + (workspace && workspace.cwd ? '' : ' warn') },
+              workspace && workspace.cwd
+                ? workspace.cwd
+                  + (workspace.cwdSource === 'recent' ? '（本页拿不到会话 → 用最近活跃工作区兜底）' : '')
+                  + (workspace.cwdSource === 'fallback' ? '（本页拿不到会话 → 用最近一次注入记下的目录兜底）' : '')
+                  + (workspace.cwdSource === 'path' ? '（手动指定）' : '')
+                : '未解析到 —— 切到「项目人格」，从下面的工作区下拉或任意目录里挑一个')
+          )
+        ),
+
+        // ---- 横向优先级条 ----
+        layers.length > 0
+          ? h('div', { className: 'soul-steps' },
+            step(1),
+            h('span', { className: 'soul-arrow' }, '›'),
+            step(2),
+            h('span', { className: 'soul-arrow' }, '›'),
+            step(3),
+            h('p', { className: 'soul-note', style: { flex: '1 1 100%', margin: '6px 0 0' } },
+              '项目层取前两步里优先级最高的那一份；本插件再把全局底座按小节叠加上来（同名小节以项目为准）。')
+          )
+          : null,
+
+        // ---- 覆盖警告 ----
+        workspace && workspace.localOverridesStored
+          ? h('div', { className: 'soul-warn-box' },
+            '这个工作目录里有 AGENT.md，它的优先级高于「项目人格（本机）」。'
+            + '你在下面第 2 层改的内容不会生效 —— 要么直接改那个文件，要么删掉它。'
+          )
+          : null,
+
+        // ---- 页签与操作 ----
+        h('div', { className: 'soul-row' },
+          h(Pill, { active: kind === 'global', onClick: function () { setKind('global') } }, '全局人格'),
+          h(Pill, {
+            active: kind === 'project',
+            onClick: function () { setKind('project') },
+          }, '项目人格'),
+          h('span', { className: 'soul-grow' }),
+          h('button', { className: 'soul-btn', onClick: openFile, disabled: path === '' }, '打开原文件'),
+          h('button', { className: 'soul-btn', onClick: load }, '重新读取'),
+          h('button', { className: 'soul-btn on', onClick: save }, '保存')
+        ),
+
+        // ---- 项目专属：工作区下拉 + 任意目录（学 dsh-agent-md，不再依赖宿主传 cwd） ----
+        kind === 'project' ? h('div', { className: 'soul-row' },
+          h('span', { className: 'soul-row-label' }, '工作区'),
+          workspaces.length > 0
+            ? h('select', {
+              className: 'soul-select',
+              value: projectCwd,
+              onChange: function (e) {
+                var next = e.target.value
+                setProjectCwd(next)
+                if (typeof props.onSelectCwd === 'function') props.onSelectCwd(next)
+              },
+            }, workspaces.map(function (w) {
+              var tags = []
+              tags.push(w.exists === true ? '已有人格' : '空')
+              if (w.sources && w.sources.indexOf('persona') >= 0) tags.push('已登记')
+              return h('option', { key: w.key || w.cwd, value: w.cwd }, (w.displayName || w.cwd) + '（' + tags.join('·') + '） — ' + w.cwd)
+            }))
+            : h('span', { className: 'soul-note' }, '还没发现本机的工作区——下面手填一个目录即可。')
+        ) : null,
+
+        kind === 'project' ? h('div', { className: 'soul-row' },
+          h('span', { className: 'soul-row-label' }, '任意目录'),
+          h('input', {
+            className: 'soul-input',
+            value: pathDraft,
+            spellCheck: false,
+            placeholder: '例：D:\\team（也可以点右边用系统选择器挑）',
+            onChange: function (e) { setPathDraft(e.target.value) },
+            onKeyDown: function (e) { if (e.key === 'Enter') usePickedCwd() },
+          }),
+          h('button', { className: 'soul-btn', onClick: doPick, disabled: busy === 'pick' }, '选择文件夹'),
+          h('button', { className: 'soul-btn', onClick: usePickedCwd, disabled: busy === 'pick' }, '使用')
+        ) : null,
+
+        // ---- 文件栏：路径 + 上次改动 ----
+        path !== '' ? h('div', { className: 'soul-filebar' },
+          h('span', { className: 'soul-filebar-path', title: path }, path),
+          h('span', null, updatedAt ? '上次改动 ' + timeLabel(updatedAt) : '文件尚未创建')
+        ) : null,
+
+        h('p', { className: 'soul-note' },
+          kind === 'global'
+            ? '全局是底座：所有会话都会吃到。项目里没有同名小节时，这里的内容照样生效。'
+            : (projectCwd !== ''
+              ? '只对上面那个工作目录生效。同名小节覆盖全局，其余自动继承。'
+              : '先在上面选一个工作区，或者手填一个目录。')
+        ),
+        h('textarea', {
+          className: 'soul-textarea',
+          value: text,
+          spellCheck: false,
+          disabled: !enabled || (kind === 'project' && projectCwd === ''),
+          placeholder: kind === 'global'
+            ? '# 你是谁\n你是一个……\n\n# 语气与形态\n……\n\n# 工程约定\n……'
+            : '# 工程约定\n这个项目用 ……，不要 ……\n\n（只写和其它项目不同的部分，其余从全局继承）',
+          onChange: function (e) { setText(e.target.value) },
+        }),
+        h('p', { className: 'soul-meta' },
+          text.length + ' 字' + (loading ? ' · 读取中' : '') + (status ? ' · ' + status : '')
+        ),
+
+        // ---- 人格模块自己的配置（从「设置」页挪进来，模块化） ----
+        h(Card, { title: '人格注入设置' },
+          h('div', { className: 'soul-row' },
+            h('span', { className: 'soul-grow' }, '合并模式'),
+            h('select', {
+              className: 'soul-input',
+              style: { maxWidth: 160 },
+              value: config.mode === 'exclusive' ? 'exclusive' : 'stack',
+              onChange: function (e) {
+                // 2026-11-08 KNOWN-ISSUES #22：只发改动的键（服务端按 key 合并）
+                apiPost('/config', { config: { mode: e.target.value } })
+                  .then(function () { setStatus('合并模式已保存'); if (typeof props.reload === 'function') props.reload() })
+                  .catch(function (err) { setStatus('保存失败：' + err.message) })
+              },
+            },
+              h('option', { value: 'stack' }, '叠加（推荐）'),
+              h('option', { value: 'exclusive' }, '互斥')
+            )
+          ),
+          h('p', { className: 'soul-note' }, '叠加 = 项目覆盖同名小节、全局其余照常生效；互斥 = 有项目人格时全局整份不注入（dsh-agent-md 的老行为）'),
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('div', { className: 'soul-grow' },
+              h('div', null, '全局人格参与注入'),
+              h('p', { className: 'soul-note' }, '关掉就变成「纯项目制」，没有项目人格的会话将没有人格')
+            ),
+            h('input', {
+              type: 'checkbox',
+              checked: config.includeGlobal !== false,
+              onChange: function (e) {
+                // 2026-11-08 KNOWN-ISSUES #22：只发改动的键（服务端按 key 合并）
+                apiPost('/config', { config: { includeGlobal: e.target.checked } })
+                  .then(function () { setStatus('已保存'); if (typeof props.reload === 'function') props.reload() })
+                  .catch(function (err) { setStatus('保存失败：' + err.message) })
+              },
+            })
+          ),
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('div', { className: 'soul-grow' },
+              h('div', null, '启用项目人格'),
+              h('p', { className: 'soul-note' }, '关掉只吃全局那份')
+            ),
+            h('input', {
+              type: 'checkbox',
+              checked: config.projectPersonaEnabled !== false,
+              onChange: function (e) {
+                // 2026-11-08 KNOWN-ISSUES #22：只发改动的键（服务端按 key 合并）
+                apiPost('/config', { config: { projectPersonaEnabled: e.target.checked } })
+                  .then(function () { setStatus('已保存'); if (typeof props.reload === 'function') props.reload() })
+                  .catch(function (err) { setStatus('保存失败：' + err.message) })
+              },
+            })
+          )
+        )
+      )
+    }
+
+// ---- 记忆 -------------------------------------------------------------
+    // 片段：运行在 client.js 工厂函数作用域内。
+    // 可用：h / Card / Badge / apiGet / apiPost / useState / useEffect / useCallback / CLARITY_LABEL。
+
+    function MemoryTab(props) {
+      var [scope, setScope] = useState('global')
+      var [query, setQuery] = useState('')
+      var [data, setData] = useState(null)
+      var [status, setStatus] = useState('')
+      var [draft, setDraft] = useState('')
+      var cwd = cwdWithFallback(props)
+      var config = props.config || {}
+
+      function patchConfig(next) {
+        // 2026-11-08 KNOWN-ISSUES #22：原来发「旧快照 + 改动键」的全量对象 ——
+        // 服务端 saveConfig 按 key 合并，全量里的旧值会把别的 Tab 刚改的项盖掉。
+        // 现在只发改动过的键（与 diary/mood/settings 的 R8 口径一致）。
+        var changed = {}
+        Object.keys(next).forEach(function (k) {
+          if (next[k] !== config[k]) changed[k] = next[k]
+        })
+        if (Object.keys(changed).length === 0) return
+        apiPost('/config', { config: changed })
+          .then(function () { setStatus('配置已保存'); if (typeof props.reload === 'function') props.reload() })
+          .catch(function (e) { setStatus('保存失败：' + e.message) })
+      }
+
+      // ---- 容量档位（2026-11-04，B6）----
+      //
+      // 为什么不给 9 个滑块：maxRecords 设成 5 的表现是「她什么都不记得了」，
+      // 没有任何报错，用户根本不会把这两件事联系起来。数字型参数在设置页上
+      // 只以档位出现，每组都是验证过的组合；真需要微调就改 persona.json。
+      //
+      // 切换后**不会立刻删东西**：这些参数在下一次例行维护（maintain）才被读到，
+      // 所以「切到保守」不会当场触发压缩。UI 上写清楚，比加确认框有用 ——
+      // 确认框点过一次就不看了。
+      var PRESETS = {
+        '保守': { recentDays: 14, fuzzyAfterDays: 14, forgetAfterDays: 90, minOwnerImportance: 75, maxRecords: 300, warnChars: 12000, autoCompact: true, maxPerTick: 8 },
+        '标准': { recentDays: 7, fuzzyAfterDays: 7, forgetAfterDays: 60, minOwnerImportance: 65, maxRecords: 600, warnChars: 24000, autoCompact: true, maxPerTick: 12 },
+        '激进': { recentDays: 5, fuzzyAfterDays: 5, forgetAfterDays: 30, minOwnerImportance: 55, maxRecords: 900, warnChars: 36000, autoCompact: true, maxPerTick: 20 }
+      }
+
+      function presetOf(cfg) {
+        var names = Object.keys(PRESETS)
+        for (var i = 0; i < names.length; i += 1) {
+          var p = PRESETS[names[i]]
+          var same = Object.keys(p).every(function (k) { return Number(cfg[k]) === Number(p[k]) })
+          if (same) return names[i]
+        }
+        return '自定义'
+      }
+
+      var load = useCallback(function () {
+        var url = '/memory?scope=' + scope + (cwd ? '&cwd=' + encodeURIComponent(cwd) : '') + (query ? '&query=' + encodeURIComponent(query) : '')
+        apiGet(url).then(setData).catch(function (e) { setStatus('读取失败：' + e.message) })
+      }, [scope, cwd, query])
+
+      useEffect(function () {
+        // 2026-11-07 R8 / P2-28：搜索框原来每敲一键就整页重取一次（后端还要全量打分）。
+        // 带 query 时延迟 300ms 再取；scope/cwd 变化仍然立刻取（那是明确的切换动作）。
+        if (query === '') { load(); return undefined }
+        var timer = setTimeout(load, 300)
+        return function () { clearTimeout(timer) }
+      }, [load])
+
+      function act(action, id, extra) {
+        var body = { scope: scope, cwd: cwd, action: action, id: id }
+        if (extra) Object.keys(extra).forEach(function (k) { body[k] = extra[k] })
+        apiPost('/memory', body)
+          .then(function () { setStatus('已' + (action === 'delete' ? '删除' : action === 'pin' ? '固定' : '更新')); load() })
+          .catch(function (e) { setStatus('操作失败：' + e.message) })
+      }
+
+      function add() {
+        if (draft.trim() === '') return
+        apiPost('/memory', { scope: scope, cwd: cwd, action: 'edit', id: '', text: draft })
+          .catch(function () {
+            // edit 需要 id，新增走 write：这里直接用 write 语义
+            return apiPost('/memory', { scope: scope, cwd: cwd, action: 'write', text: draft })
+          })
+          .then(function () { setDraft(''); setStatus('记下了'); load() })
+          .catch(function (e) { setStatus('添加失败：' + e.message) })
+      }
+
+      var records = (data && data.records) || []
+
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        h('div', { className: 'soul-row' },
+          h('button', { className: 'soul-btn' + (scope === 'global' ? ' on' : ''), onClick: function () { setScope('global') } }, '全局记忆'),
+          h('button', { className: 'soul-btn' + (scope === 'project' ? ' on' : ''), onClick: function () { setScope('project') } }, '本项目'),
+          h('input', {
+            className: 'soul-input soul-grow',
+            placeholder: '搜关键词',
+            value: query,
+            style: { maxWidth: 220 },
+            onChange: function (e) { setQuery(e.target.value) },
+          }),
+          h('button', { className: 'soul-btn', onClick: load }, '刷新')
+        ),
+        h('p', { className: 'soul-meta' }, (data ? data.total : 0) + ' 条' + (status ? ' · ' + status : '')),
+
+        h(Card, { title: '手动记一条' },
+          h('div', { className: 'soul-row' },
+            h('input', {
+              className: 'soul-input soul-grow',
+              placeholder: '写一件值得记住的事（会按重要度自动定衰减速度）',
+              value: draft,
+              onChange: function (e) { setDraft(e.target.value) },
+              onKeyDown: function (e) { if (e.key === 'Enter') add() },
+            }),
+            h('button', { className: 'soul-btn', onClick: add }, '记下来')
+          ),
+          h('p', { className: 'soul-note' }, '主人的偏好/目标、约定、"第一次"类的事会自动判高重要度，衰减得慢。')
+        ),
+
+        records.length === 0
+          ? h('div', { className: 'soul-empty' }, query ? '没搜到' : '还没有记忆。多聊几句，值得记的会自动进来')
+          : h('div', { className: 'soul-list soul-list-fixed' }, records.map(function (r) {
+            return h('div', { key: r.id, className: 'soul-item' },
+              h(Badge, { clarity: r.clarity }, CLARITY_LABEL[r.clarity] || r.clarity),
+              h('div', { className: 'soul-item-text' },
+                h('div', null, r.text),
+                h('div', { className: 'soul-meta' },
+                  '重要度 ' + r.importance +
+                  ' · 提到过 ' + r.recallCount + ' 次' +
+                  ' · ' + (r.source === 'auto' ? '自动记的' : r.source === 'tool' ? '她自己记的' : '手动') +
+                  (r.pinned ? ' · 已固定' : '') +
+                  (r.tags && r.tags.length ? ' · ' + r.tags.join('/') : '')
+                )
+              ),
+              h('button', { className: 'soul-btn', onClick: function () { act('pin', r.id, { pinned: !r.pinned }) }, title: '固定后永不遗忘' }, r.pinned ? '取消固定' : '固定'),
+              h('button', { className: 'soul-btn danger', onClick: function () { act('delete', r.id) } }, '删')
+            )
+          })),
+
+        // ---- 记忆模块自己的配置（从「设置」页挪进来，模块化） ----
+        h(Card, { title: '容量档位' },
+          h('p', { className: 'soul-note' }, '当前：' + presetOf(config) + '。这一组决定「记多久、留多少、多久忘」；切换后不会立刻删东西，下一次例行维护时才生效。'),
+          h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 } },
+            Object.keys(PRESETS).map(function (name) {
+              return h('button', {
+                className: 'soul-btn' + (presetOf(config) === name ? ' on' : ''),
+                onClick: function () {
+                  patchConfig(PRESETS[name])
+                  setStatus('已切到「' + name + '」，下次例行维护时生效（不会当场删记忆）')
+                }
+              }, name)
+            })
+          ),
+          h('p', { className: 'soul-note', style: { marginTop: 6 } }, '想逐个数字调就改 persona.json —— 那些参数不放在界面上，是因为调坏了不会报错，只会「突然什么都不记得」。'),
+          h('div', { className: 'soul-row', style: { marginTop: 10 } },
+            h('span', { className: 'soul-grow' }, '告警字数'),
+            h('input', {
+              className: 'soul-input', type: 'number', style: { maxWidth: 110 },
+              value: config.warnChars || 24000,
+              onChange: function (e) { patchConfig({ warnChars: Number(e.target.value) || 24000 }) }
+            })
+          ),
+          h('div', { className: 'soul-row' },
+            h('span', { className: 'soul-grow' }, '每次整理最多动几条'),
+            h('input', {
+              className: 'soul-input', type: 'number', style: { maxWidth: 110 },
+              value: config.maxPerTick || 12,
+              onChange: function (e) { patchConfig({ maxPerTick: Number(e.target.value) || 12 }) }
+            })
+          ),
+          h('div', { className: 'soul-row' },
+            h('span', { className: 'soul-grow' }, '容量到顶时自动压缩'),
+            h('input', {
+              type: 'checkbox',
+              checked: config.autoCompact !== false,
+              onChange: function (e) { patchConfig({ autoCompact: e.target.checked }) }
+            })
+          ),
+          h('p', { className: 'soul-note' }, '这三个可以单独调：调坏了最多是「提醒晚一点 / 整理慢一点 / 不自动整理」，都看得出来也能改回来。'),
+          // 衰减三键（2026-11-21 / 0.10.3）：默认收起。
+          // 它们决定「她忘得多快」，属于性格而不是日常设置；调坏了不会报错，
+          // 只会「突然什么都不记得」—— 所以放在高级里，并写清后果。
+          h('details', { className: 'soul-adv' },
+            h('summary', null, '高级：忘记的速度（改动有风险）'),
+            h('p', { className: 'soul-note' }, '这三个决定记忆「清晰 → 模糊 → 忘掉」各用几天。默认 7 / 7 / 60 是标准档；改小会让她忘得快，改大则越记越多、注入越挤。'),
+            [
+              ['recentDays', '清晰保持（天）', '低于这个天数算「最近」'],
+              ['fuzzyAfterDays', '开始模糊（天）', '超过之后降为模糊（只留一句话）'],
+              ['forgetAfterDays', '彻底忘掉（天）', '超过之后不再注入（文件还在）']
+            ].map(function (row) {
+              return h('div', { key: row[0], className: 'soul-row' },
+                h('div', { className: 'soul-grow' },
+                  h('div', null, row[1]),
+                  h('p', { className: 'soul-note' }, row[2])
+                ),
+                h('input', {
+                  className: 'soul-input',
+                  type: 'number',
+                  style: { maxWidth: 110 },
+                  value: Number(config[row[0]]) || 0,
+                  onChange: function (e) {
+                    var n = Number(e.target.value)
+                    if (Number.isFinite(n) && n > 0) {
+                      var next = {}
+                      next[row[0]] = n
+                      patchConfig(next)
+                    }
+                  }
+                })
+              )
+            })
+          )
+        ),
+
+        h(Card, { title: '记忆注入与整理' },
+          h('div', { className: 'soul-row' },
+            h('span', { className: 'soul-grow' }, '注入预算（字）'),
+            h('input', {
+              className: 'soul-input',
+              type: 'number',
+              style: { maxWidth: 110 },
+              value: config.injectMaxChars || 3200,
+              onChange: function (e) { patchConfig({ injectMaxChars: Number(e.target.value) || 3200 }) },
+            })
+          ),
+          h('p', { className: 'soul-note' }, '这段**每回合重发**，是常驻成本。中文按 DSH 口径的 1.4~1.9 倍算：3200 字约 2200~3000 token。'),
+          // 2026-10-30：注入从「整卡」改成「固定区 + 按当前这句话召回相关区」
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('div', { className: 'soul-grow' },
+              h('div', null, '按这句话召回相关记忆'),
+              h('p', { className: 'soul-note' }, '开：固定区（开始 / 永远不会忘的）照旧，其余按你说的这句挑相关的；关：退回整张卡（老行为）')
+            ),
+            h('input', {
+              type: 'checkbox',
+              checked: config.memoryRecall !== false,
+              onChange: function (e) { patchConfig({ memoryRecall: e.target.checked }) },
+            })
+          ),
+          h('div', { className: 'soul-row' },
+            h('span', { className: 'soul-grow' }, '相关区召回条数'),
+            h('input', {
+              className: 'soul-input',
+              type: 'number',
+              style: { maxWidth: 110 },
+              value: config.memoryRecallTopK ?? 6,
+              onChange: function (e) { patchConfig({ memoryRecallTopK: Number(e.target.value) || 6 }) },
+            })
+          ),
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('div', { className: 'soul-grow' },
+              h('div', null, '注入记忆'),
+              h('p', { className: 'soul-note' }, '关掉后记忆不再进提示词，但仍在后台记录')
+            ),
+            h('input', {
+              type: 'checkbox',
+              checked: config.memoryEnabled !== false,
+              onChange: function (e) { patchConfig({ memoryEnabled: e.target.checked }) },
+            })
+          ),
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('div', { className: 'soul-grow' },
+              h('div', null, '项目记忆独立一张卡'),
+              h('p', { className: 'soul-note' }, '关掉则所有记忆都进全局卡')
+            ),
+            h('input', {
+              type: 'checkbox',
+              checked: config.projectMemoryEnabled !== false,
+              onChange: function (e) { patchConfig({ projectMemoryEnabled: e.target.checked }) },
+            })
+          ),
+          h('div', { className: 'soul-row', style: { marginTop: 8 } },
+            h('button', {
+              className: 'soul-btn',
+              onClick: function () {
+                setStatus('整理中…')
+                apiPost('/maintain', { cwd: cwd })
+                  .then(function (data) {
+                    var r = data.report || {}
+                    setStatus('整理完成：衰减 ' + (r.decayed || []).length + ' 张，压缩 ' + (r.compacted || []).length + ' 处')
+                    if (typeof props.reload === 'function') props.reload()
+                  })
+                  .catch(function (e) { setStatus('失败：' + e.message) })
+              }
+            }, '立即整理一次')
+          )
+        )
+      )
+    }
+
+// ---- 目的 -------------------------------------------------------------
+    // 片段：运行在 client.js 工厂函数作用域内。可用：h / Card / apiPost / NEED_LABEL / KIND_LABEL。
+
+    function PurposeTab(props) {
+      var state = props.state
+      if (state === null) return h('div', { className: 'soul-empty' }, '正在加载…')
+      var purpose = state.purpose || {}
+      var drives = purpose.drives || {}
+
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+        h(Card, { title: '此刻的状态' },
+          h('p', { className: 'soul-note' }, '四个维度各有 0~100 的驱动值：8 小时落一半，聊到相关的东西会涨。她"想说点什么"的冲动就来自这里。'),
+          h('div', { className: 'soul-list' },
+            Object.keys(drives).map(function (need) {
+              var value = drives[need] || 0
+              return h('div', { key: need, className: 'soul-row' },
+                h('span', { style: { width: 72, fontSize: 12 } }, NEED_LABEL[need] || need),
+                h('div', { className: 'soul-meter soul-grow' },
+                  h('div', { className: 'soul-meter-fill', style: { width: Math.round(value * 100) + '%' } })
+                ),
+                h('span', { className: 'soul-meta', style: { width: 32, textAlign: 'right' } }, String(Math.round(value * 100)))
+              )
+            })
+          ),
+          purpose.mood ? h('p', { className: 'soul-meta', style: { marginTop: 8 } }, '当前偏向：' + purpose.mood.label) : null
+        ),
+        h(Card, { title: '心里惦记的事（' + (purpose.open || 0) + ' 件）' },
+          h('p', { className: 'soul-note' }, '这些会出现在她的提示词里，但明确写了「不需要每轮都提」——所以不会变成复读。'),
+          (purpose.goals || []).length === 0
+            ? h('div', { className: 'soul-empty' }, '暂时没有。她答应过的事、没弄明白的事会自动长出来')
+            : h('div', { className: 'soul-list soul-list-fixed' }, (purpose.goals || []).map(function (goal) {
+              return h('div', { key: goal.id, className: 'soul-item' },
+                h('span', { className: 'soul-badge' }, KIND_LABEL[goal.kind] || '想试试'),
+                h('div', { className: 'soul-item-text' },
+                  h('div', null, goal.text),
+                  h('div', { className: 'soul-meta' }, '权重 ' + goal.weight + ' · 来源 ' + (goal.source === 'memory' ? '从记忆里长出来的' : goal.source))
+                ),
+                h('button', {
+                  className: 'soul-btn',
+                  onClick: function () {
+                    apiPost('/goal', { id: goal.id }).then(function () { props.reload() }).catch(function () {})
+                  }
+                }, '放下了')
+              )
+            }))
+        ),
+
+        // ---- 目的模块自己的开关（从「设置」页挪进来，模块化） ----
+        h(Card, { title: '目的机制' },
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('div', { className: 'soul-grow' },
+              h('div', null, '启用「心里惦记的事」'),
+              h('p', { className: 'soul-note' }, '从记忆里提炼没闭合的事，让她的主动有连续性。关掉后不再注入这一段')
+            ),
+            h('input', {
+              type: 'checkbox',
+              checked: !state.config || state.config.purposeEnabled !== false,
+              onChange: function (e) {
+                // 2026-11-08 KNOWN-ISSUES #22：只发改动的键，不发旧快照全量
+                apiPost('/config', { config: { purposeEnabled: e.target.checked } })
+                  .then(function () { props.reload() })
+                  .catch(function () {})
+              },
+            })
+          )
+        )
+      )
+    }
+
+﻿// ---- 心情 -------------------------------------------------------------
+    // 片段：运行在 client.js 工厂函数作用域内。
+    // 可用：h / Card / apiGet / apiPost / useState / useEffect / useCallback /
+    //       timeLabel / MOOD_DIMS / MOOD_FACE_URL。
+    //
+    // 版权：本页布局派生自 dsh-feiyu-mood（原作者 Yuuyuko-uu，
+    // 《Yuuyuko-uu 插件许可 1.2》，见 THIRD-PARTY-NOTICES.md §3.1）。
+    // 布局参考 feiyu-mood 的设置页：hero（表情 + 大数字 + 最近理由）→ 七情 → 时间线 → 判断配置。
+    // 跟它不一样的两处（都是刻意的）：
+    //   · 没有「每回合注入」区块 —— 心情只记账，不进提示词；
+    //   · 没有「挂饰」页 —— 不要右下角那套。
+    function MoodTab(props) {
+      var cwd = cwdWithFallback(props)
+      var [data, setData] = useState(null)
+      var [config, setConfig] = useState(props.state && props.state.config ? props.state.config : null)
+      var [status, setStatus] = useState('')
+      var [busy, setBusy] = useState('')
+      // 密钥输入草稿：只活在页面上，保存后立刻清空，绝不留明文在内存里过夜
+      var [secretDraft, setSecretDraft] = useState({})
+      function setSecretDraftFor(name, value) {
+        var next = {}
+        Object.keys(secretDraft || {}).forEach(function (k) { next[k] = secretDraft[k] })
+        next[name] = value
+        setSecretDraft(next)
+      }
+
+      var load = useCallback(function () {
+        apiGet('/mood' + (cwd ? '?cwd=' + encodeURIComponent(cwd) : ''))
+          .then(function (res) {
+            setData(res.state || null)
+            if (res.config) setConfig(res.config)
+          })
+          .catch(function (e) { setStatus('读取失败：' + e.message) })
+      }, [cwd])
+
+      useEffect(function () { load() }, [load])
+      // 20 秒轻轮询 + 回到前台立刻刷：判定是对话结束后异步落盘的，停在旧数字会显得没在动。
+      // 2026-11-08 KNOWN-ISSUES #24：后台标签页不再轮询（浏览器节流也省不掉请求），
+      // 隐藏时停表、可见时恢复 + 立刻补刷一次。
+      useEffect(function () {
+        var timer = null
+        function start() { if (timer === null) timer = setInterval(load, 20000) }
+        function stop() { if (timer !== null) { clearInterval(timer); timer = null } }
+        function onVisibility() {
+          if (document.visibilityState === 'visible') { start(); load() }
+          else stop()
+        }
+        start()
+        document.addEventListener('visibilitychange', onVisibility)
+        return function () {
+          stop()
+          document.removeEventListener('visibilitychange', onVisibility)
+        }
+      }, [load])
+
+      if (config === null && data === null) return h('div', { className: 'soul-empty' }, '正在加载…')
+
+      function patch(next) {
+        var base = config || {}
+        var merged = {}
+        Object.keys(base).forEach(function (k) { merged[k] = base[k] })
+        Object.keys(next).forEach(function (k) { merged[k] = next[k] })
+        setConfig(merged)
+        // 2026-11-07 R8（P2-25/26）：
+        //   ① 只把**改动过的键**发上去 —— 服务端 saveConfig 是按 key 合并的，
+        //      发全量会让「另一个标签页刚改的项」被这份旧快照覆盖；
+        //   ② 同一个输入框连续敲键只发最后一次（300ms 防抖）。
+        var changed = {}
+        Object.keys(next).forEach(function (k) {
+          if (next[k] !== base[k]) changed[k] = next[k]
+        })
+        if (Object.keys(changed).length === 0) {
+          setStatus('已保存，下一个回合生效')
+          return
+        }
+        apiPostDebounced('config:mood', '/config', { config: changed }, 300)
+          .then(function (result) {
+            // 2026-11-10 R20-B（审查 M25）：被防抖合并掉的请求没发出去，不提示不刷新
+            if (result && result.merged === true) return
+            setStatus('已保存，下一个回合生效')
+            // 2026-11-08 KNOWN-ISSUES #22：同 diary-tab，保存成功后刷新全局快照
+            if (typeof props.reload === 'function') props.reload()
+          })
+          .catch(function (e) { setStatus('保存失败：' + e.message) })
+      }
+
+      function reset() {
+        // 2026-11-04 修 B8：重置是**不可逆**的 —— 200 条时间线一起没，
+        // 而且服务端直接拿空状态覆盖。这种操作必须有二次确认。
+        if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+          if (!window.confirm('把心情重置回基准？时间线里记着的那些情绪会一起清掉，不能撤销。')) return
+        }
+        setBusy('reset')
+        apiPost('/mood/reset', { cwd: cwd })
+          .then(function () { setStatus('已重置回基准心情'); load() })
+          .catch(function (e) { setStatus('重置失败：' + e.message) })
+          .then(function () { setBusy('') })
+      }
+
+      // 2026-11-04：`min`/`max` 对 type=number 只是**校验提示**，不会拦住输入，
+      // 也不会纠正已有的越界值。所以这里自己做一遍夹取 —— 显示和保存都夹。
+      // 起因：「每几轮挂一次」滑块下限写 1，可选 1，但运行时恒按 2 执行（语气消息
+      // 要到下一个 step 才被取走，1 会自持），界面却不给任何提示。
+      // 与其在 UI 上留一个永远不生效的选项，不如直接不给选。
+      function clampVal(raw, lo, hi) {
+        var n = Number(raw)
+        if (isNaN(n)) return raw
+        if (typeof lo === 'number' && n < lo) return lo
+        if (typeof hi === 'number' && n > hi) return hi
+        return n
+      }
+
+      function numRow(key, label, note, min, max, step) {
+        return h('div', { className: 'soul-row' },
+          h('span', { className: 'soul-grow' }, label),
+          h('input', {
+            className: 'soul-input',
+            type: 'number',
+            style: { maxWidth: 100 },
+            min: min,
+            max: max,
+            step: step || 1,
+            value: (config && config[key] != null) ? clampVal(config[key], min, max) : '',
+            onChange: function (e) {
+              var v = Number(e.target.value)
+              if (!isNaN(v)) patch({ [key]: clampVal(v, min, max) })
+            },
+          }),
+          note ? h('p', { className: 'soul-note', style: { flex: '1 1 100%', margin: '2px 0 0' } }, note) : null
+        )
+      }
+
+      function textRow(key, label, placeholder, note) {
+        return h('div', { className: 'soul-row' },
+          h('span', { style: { flex: '0 0 72px', fontSize: 12 } }, label),
+          h('input', {
+            className: 'soul-input',
+            style: { maxWidth: 220 },
+            value: (config && config[key]) || '',
+            spellCheck: false,
+            placeholder: placeholder,
+            onChange: function (e) { patch({ [key]: e.target.value }) },
+          }),
+          note ? h('p', { className: 'soul-note', style: { flex: '1 1 100%', margin: '2px 0 0' } }, note) : null
+        )
+      }
+
+      // 密钥行：输入框永远是空的，只显示「已保存/未配置」。
+      // 已经存过的密钥不会再回显 —— 服务端只报状态，不回明文。
+      function secretRow(name, label, note) {
+        var info = (data && data.secrets) ? data.secrets[name] : null
+        var saved = !!(info && info.exists)
+        return h('div', { className: 'soul-row' },
+          h('span', { style: { flex: '0 0 92px', fontSize: 12 } }, label),
+          h('input', {
+            className: 'soul-input',
+            type: 'password',
+            style: { maxWidth: 220 },
+            value: secretDraft[name] || '',
+            spellCheck: false,
+            autoComplete: 'off',
+            placeholder: saved ? '已保存（重新输入可覆盖）' : '粘贴密钥后点保存',
+            onChange: function (e) { setSecretDraftFor(name, e.target.value) },
+          }),
+          h('button', {
+            className: 'soul-btn',
+            style: { marginLeft: 8 },
+            onClick: function () {
+              var value = secretDraft[name] || ''
+              if (!value) { setStatus('先粘贴密钥'); return }
+              apiPost('/secret', { name: name, value: value })
+                .then(function (res) {
+                  setSecretDraftFor(name, '')
+                  setStatus(res.encrypted ? '密钥已加密保存（DPAPI）' : '密钥已保存（明文+0600，本机）')
+                  load()
+                })
+                .catch(function (e) { setStatus('保存密钥失败：' + e.message) })
+            },
+          }, '保存'),
+          h('span', { className: 'soul-meta', style: { marginLeft: 8 } },
+            saved ? (info.encrypted ? '已保存 · 加密' : '已保存') : '未配置'),
+          note ? h('p', { className: 'soul-note', style: { flex: '1 1 100%', margin: '2px 0 0' } }, note) : null
+        )
+      }
+
+      // 七情显示用百分比（后端按「满格 20」折算好），原始值只在后台算
+      var dimsPct = (data && data.dimsPercent) || {}
+      var timeline = (data && data.timeline) || []
+      var enabled = !config || config.moodEnabled !== false
+
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+
+        // ---- hero：此刻心情 ----
+        h(Card, {
+          title: '此刻心情',
+          meta: data && data.updatedAt ? '上次变动 ' + timeLabel(new Date(data.updatedAt).toISOString()) : ''
+        },
+          h('div', { className: 'soul-mood-hero' },
+            h('div', { className: 'soul-mood-face' },
+              h('img', {
+                src: MOOD_FACE_URL + ((data && data.face) || 'ok') + '.png',
+                alt: (data && data.label) || '心情',
+                title: (data && data.label) || ''
+              })),
+            h('div', null,
+              h('div', { className: 'soul-mood-num' }, data ? String(data.mood) : '—'),
+              h('div', { className: 'soul-mood-label' }, (data && data.label) || '还没判过')
+            ),
+            h('div', { className: 'soul-mood-reason' }, (data && data.lastReason) || '还没聊出变化。多说几轮，她的心情会自己动起来。'),
+            h('button', {
+              className: 'soul-btn danger',
+              disabled: busy === 'reset',
+              onClick: reset,
+              title: '心情回到基准值，时间线清空'
+            }, busy === 'reset' ? '重置中…' : '重置')
+          ),
+          h('p', { className: 'soul-note' }, '心情是基调，每轮只挪判定值的 1/3，几轮才走得动一格；七情即时变、90 分钟散一半。**不注入提示词**，只记账 —— 但会推着「惦记」的驱动。')
+        ),
+
+        // ---- 七情 ----
+        h(Card, { title: '七情', meta: data && data.top && data.top.length ? '最突出：' + data.top.map(function (t) { return t.label + ' ' + t.p + '%' }).join(' / ') : '' },
+          h('div', null, MOOD_DIMS.map(function (pair) {
+            var pct = Math.round(dimsPct[pair[0]] || 0)
+            return h('div', { key: pair[0], className: 'soul-dim' },
+              h('span', { className: 'soul-dim-name' }, pair[1]),
+              h('div', { className: 'soul-meter soul-grow', style: { margin: 0 } },
+                h('div', {
+                  className: 'soul-meter-fill',
+                  style: {
+                    width: pct + '%',
+                    background: pct >= 60 ? 'var(--soul-brand)' : pct >= 30 ? '#ffb020' : 'rgba(127,127,127,.25)'
+                  }
+                })
+              ),
+              h('span', { className: 'soul-dim-val' }, pct + '%')
+            )
+          })),
+          h('p', { className: 'soul-note' }, '百分比按「满格 20」折算：判定单次上限 ±10，实测一天峰值在 13 上下 —— 所以「踏实 60%」已经是很踏实了，不是刚过一半。')
+        ),
+
+        // ---- 时间线 ----
+        h(Card, { title: '时间线', meta: (data ? data.timelineCount : 0) + ' 条 · 显示最近 40 条' },
+          timeline.length === 0
+            ? h('div', { className: 'soul-empty' }, '还没有记录')
+            : h('div', { className: 'soul-tl' }, timeline.slice(0, 40).map(function (t, i) {
+              var up = (t.delta || 0) > 0
+              var flat = (t.delta || 0) === 0
+              return h('div', { key: t.at + '-' + i, className: 'soul-tl-item' },
+                h('span', { className: 'soul-tl-time' }, timeLabel(new Date(t.at).toISOString()) + (t.kind === 'decay' ? ' 平复' : '')),
+                h('span', {
+                  className: 'soul-tl-delta ' + (flat ? '' : up ? 'up' : 'down')
+                }, flat ? '±0' : (up ? '+' : '') + t.delta),
+                h('span', { className: 'soul-tl-body' },
+                  (t.reason || '') + (t.minor ? ' · 小波动' : '')
+                )
+              )
+            }))
+        ),
+
+        // ---- 判断配置 ----
+        h(Card, { title: '判断配置' },
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('div', { className: 'soul-grow' },
+              h('div', null, '每轮判断心情变化'),
+              h('p', { className: 'soul-note' }, '关掉后不再判断，已有记录保留，时间衰减照跑。')
+            ),
+            h('input', {
+              type: 'checkbox',
+              checked: enabled,
+              onChange: function (e) { patch({ moodEnabled: e.target.checked }) },
+            })
+          ),
+          h('p', { className: 'soul-note', style: { margin: '4px 0 6px' } }, '称呼（判断提示词里用，写她怎么自称、怎么叫你）'),
+          textRow('moodSelfName', '自称', '例：小糖'),
+          // 2026-11-04：字段统一成 ownerName（旧的 moodOwnerName 只做迁移）。
+          // 留空时提示词里「关系 / 性别 / 称呼」那几句整句不注入。
+          textRow('ownerName', '叫你', '去「设置」页填', '留空 = 提示词里关系 / 性别那几句不注入'),
+          textRow('moodSelfAliases', '别名', '例：糖糖、小糖'),
+          h('p', { className: 'soul-note', style: { margin: '8px 0 6px' } }, '判断模型（留空 = 跟随会话模型）'),
+          textRow('moodJudgeProvider', 'provider', '例：siliconflow'),
+          textRow('moodJudgeModel', 'model', '例：Qwen/Qwen2.5-7B-Instruct'),
+          secretRow('siliconflow', '硅基流动密钥', 'provider 填 siliconflow 时用这个；密钥加密后存在本机，页面上不会再显示'),
+          h('p', { className: 'soul-note', style: { margin: '8px 0 6px' } },
+            '心情语气（挂在消息后，系统提示一个字不动）'),
+          h('div', { className: 'soul-row' },
+            h('span', { className: 'soul-grow' }, '往消息后挂一行心情'),
+            h('input', {
+              type: 'checkbox',
+              checked: config ? config.moodToneInject !== false : true,
+              onChange: function (e) { patch({ moodToneInject: e.target.checked }) },
+            })
+          ),
+          // 下限 2：语气是往下一条消息上挂的（inbox next-step），要到下一个 step 才被取走 ——
+          // 设成 1 等于每步都投、每步又催生下一步，会自持循环。所以界面上不给 1 这个选项。
+          numRow('moodToneEveryTurns', '每几轮挂一次', '中档不挂；心情偏高或偏低时才挂，隔这么多轮盖一次戳。最低 2 —— 每轮都挂会自己催生下一轮', 2, 50),
+          numRow('moodToneThreshold', '偏离多少算低/高', '离基准超过这个值才分档，否则算中档（什么都不挂）', 3, 40),
+          h('p', { className: 'soul-note', style: { margin: '8px 0 6px' } }, '数值'),
+          numRow('moodBase', '基准心情', '心情漂移后往这里回落（0~100）', 30, 100),
+          numRow('moodFloor', '心情下限', '再难过也不跌破这条线（0~100）', 0, 100),
+          numRow('moodDecayHalfHours', '回落半衰期（小时）', '心情向基准回落一半要多久；七情固定 90 分钟归零', 1, 168),
+          numRow('moodSigMood', '显著阈值（心情）', '判定值绝对变化 ≥ 这个才算显著；以下记为小波动', 1, 30),
+          numRow('moodSigDim', '显著阈值（七情）', '单根七情绝对变化 ≥ 这个才算显著（按原始判定值算，满格 20）', 1, 100)
+        ),
+
+        status ? h('p', { className: 'soul-meta' }, status) : null
+      )
+    }
+
+// ---- 日记 -------------------------------------------------------------
+    // 片段：运行在 client.js 工厂函数作用域内。
+    // 可用：h / Card / Pill / apiGet / apiPost / apiPostDebounced / useState / useEffect / useCallback /
+    //       timeLabel / cwdWithFallback。
+    //
+    // 2026-11-21 / 0.10.2：页签从「摘录」改名「日记」，里面分两个分项：
+    //   · 摘录   —— 一天一篇的事实条目（0.10.0 起）
+    //   · 心里话 —— 她自己写、按月一个文件（self/YYYY-MM.md），设置页可手动改/删
+    // 0.10.5 起旧日记（public/、private/）不再显示 —— 文件还在磁盘上，但那不是现在的「日记」。
+    //
+    // 摘录本用了几天：绑定当天算第 1 天，24 小时向上取整（跟后端 /state 的 sessionDays 同口径）
+    function diaryDaysSince(bornAt) {
+      var born = Number(bornAt)
+      if (!Number.isFinite(born) || born <= 0) return 0
+      var elapsed = Math.max(0, Date.now() - born)
+      return Math.max(1, Math.ceil(elapsed / (24 * 60 * 60 * 1000)))
+    }
+
+    /** 本地日期键 YYYY-MM-DD（心里话编辑器的默认日期）。 */
+    function localDateKey(offsetDays) {
+      var d = new Date()
+      d.setDate(d.getDate() - (offsetDays || 0))
+      var pad = function (n) { return (n < 10 ? '0' : '') + n }
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+    }
+
+    function DiaryTab(props) {
+      var [mode, setMode] = useState('excerpt')
+      var [data, setData] = useState(null)
+      var [config, setConfig] = useState(props.state && props.state.config ? props.state.config : null)
+      var [status, setStatus] = useState('')
+      var [busy, setBusy] = useState('')
+      var [noteText, setNoteText] = useState('')
+      var [selectedDate, setSelectedDate] = useState('')
+      // 摘录全文：受控 state（2026-11-08 KNOWN-ISSUES #25，原来走 getElementById 直写 DOM）
+      var [excerptText, setExcerptText] = useState('')
+      var [reading, setReading] = useState(null)
+      // 可选会话（2026-11-04）：下拉选项来自 GET /diary/sessions
+      var [sessions, setSessions] = useState([])
+      var [sessionsLoading, setSessionsLoading] = useState(false)
+      // 心里话（2026-11-21 / 0.10.2）：最近列表 + 编辑器
+      var [selfRows, setSelfRows] = useState([])
+      var [selfDate, setSelfDate] = useState(localDateKey(0))
+      var [selfText, setSelfText] = useState('')
+
+      var load = useCallback(function () {
+        apiGet('/diary/list?days=14')
+          .then(function (res) { setData(res.list || []) })
+          .catch(function (e) { setStatus('读取失败：' + e.message) })
+      }, [])
+
+      var loadSelf = useCallback(function () {
+        apiGet('/self/list?days=14')
+          .then(function (res) { setSelfRows(Array.isArray(res.list) ? res.list : []) })
+          .catch(function (e) { setStatus('读取心里话失败：' + e.message) })
+      }, [])
+
+      var loadSessions = useCallback(function () {
+        setSessionsLoading(true)
+        apiGet('/diary/sessions')
+          .then(function (res) {
+            setSessions(Array.isArray(res.sessions) ? res.sessions : [])
+          })
+          .catch(function (e) {
+            setSessions([])
+            setStatus('读取会话列表失败：' + e.message)
+          })
+          .then(function () { setSessionsLoading(false) })
+      }, [])
+
+      useEffect(function () { load() }, [load])
+      useEffect(function () { loadSelf() }, [loadSelf])
+      useEffect(function () { loadSessions() }, [loadSessions])
+
+      if (config === null) return h('div', { className: 'soul-empty' }, '正在加载…')
+
+      function patch(next) {
+        var base = config || {}
+        var merged = {}
+        Object.keys(base).forEach(function (k) { merged[k] = base[k] })
+        Object.keys(next).forEach(function (k) { merged[k] = next[k] })
+        setConfig(merged)
+        // 2026-11-07 R8（P2-25/26）：
+        //   ① 只把**改动过的键**发上去 —— 服务端 saveConfig 是按 key 合并的，
+        //      发全量会让「另一个标签页刚改的项」被这份旧快照覆盖；
+        //   ② 同一个输入框连续敲键只发最后一次（300ms 防抖）。
+        var changed = {}
+        Object.keys(next).forEach(function (k) {
+          if (next[k] !== base[k]) changed[k] = next[k]
+        })
+        if (Object.keys(changed).length === 0) {
+          setStatus('已保存，下一个回合生效')
+          return
+        }
+        apiPostDebounced('config:diary', '/config', { config: changed }, 300)
+          .then(function (result) {
+            // 2026-11-10 R20-B（审查 M25）：被防抖合并掉的请求 resolve({merged:true})，
+            // 它从没发出去 —— 不提示「已保存」也不刷新（真正发出的那次会走到这里）。
+            if (result && result.merged === true) return
+            setStatus('已保存，下一个回合生效')
+            // 2026-11-08 KNOWN-ISSUES #22：保存成功后让 SoulSection 拉回最新 config，
+            // 其余 Tab 的 props.config 不再停留在各自挂载时的旧快照。
+            if (typeof props.reload === 'function') props.reload()
+          })
+          .catch(function (e) { setStatus('保存失败：' + e.message) })
+      }
+
+      function trigger() {
+        var dateStr = selectedDate || ''
+        var body = {}
+        if (dateStr) body.date = dateStr
+        if (noteText.trim()) body.note = noteText.trim()
+        setBusy('trigger')
+        apiPost('/diary', body)
+          .then(function (res) {
+            setStatus(res.message || '已触发摘录写作')
+            setNoteText('')
+            load()
+          })
+          .catch(function (e) { setStatus('触发失败：' + e.message) })
+          .then(function () { setBusy('') })
+      }
+
+      function readDay(item) {
+        setBusy('read')
+        apiGet('/diary/read?date=' + encodeURIComponent(item.date))
+          .then(function (res) {
+            setReading(res)
+            if (res.hasExcerpt) {
+              setExcerptText(String(res.excerptContent || ''))
+              setStatus(res.date + ' 的摘录（' + (Array.isArray(res.excerptLines) ? res.excerptLines.length : 0) + ' 条）')
+              return
+            }
+            // 2026-11-21 / 0.10.5：旧日记不再从接口里出，这里只可能是「没有摘录」。
+            setExcerptText('')
+            setStatus(res.date + ' 还没有摘录')
+          })
+          .catch(function (e) { setStatus('读取失败：' + e.message) })
+          .then(function () { setBusy('') })
+      }
+
+      // 选中下拉里的任意会话（2026-11-04）：把 id 交给后端存配置，成功后重拉列表。
+      // 先乐观更新 select，失败时回滚 —— 否则受控 select 会在请求返回前弹回旧值。
+      function bindSession(sessionId) {
+        var id = String(sessionId || '').trim()
+        if (id === '' || busy === 'bind' || id === (config.excerptSessionId || '')) return
+        var previous = config
+        var optimistic = {}
+        Object.keys(previous).forEach(function (k) { optimistic[k] = previous[k] })
+        optimistic.excerptSessionId = id
+        setConfig(optimistic)
+        setBusy('bind')
+        apiPost('/diary/bind', { sessionId: id })
+          .then(function (res) {
+            if (res && res.config) setConfig(res.config)
+            // 显示名字而不是 id：跟下拉同一个口径（sessionLabel 是函数声明，会提升）
+            var boundId = String((res && res.sessionId) || id)
+            var boundItem = sessions.filter(function (s) { return s && String(s.id) === boundId })[0] || { id: boundId, title: '' }
+            setStatus('已绑定摘录会话：' + sessionLabel(boundItem).text)
+            load()
+          })
+          .catch(function (e) {
+            setConfig(previous)
+            setStatus('绑定失败：' + e.message)
+          })
+          .then(function () { setBusy('') })
+      }
+
+      function unbind() {
+        setBusy('unbind')
+        apiPost('/diary/unbind', {})
+          .then(function (res) {
+            if (res && res.config) setConfig(res.config)
+            setStatus('已解绑：摘录触发时会跳过并记日志')
+          })
+          .catch(function (e) { setStatus('解绑失败：' + e.message) })
+          .then(function () { setBusy('') })
+      }
+
+      // 心里话：选中某一天 → 载入正文；保存 / 删除都走 POST /self/save（插件写盘，人改的）。
+      function pickSelf(item) {
+        setSelfDate(item.date)
+        setSelfText(String(item.text || ''))
+        setStatus('正在编辑 ' + item.date + ' 的心里话')
+      }
+
+      function saveSelf(text) {
+        var dateStr = String(selfDate || '').trim()
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+          setStatus('日期要写成 YYYY-MM-DD')
+          return
+        }
+        setBusy('self-save')
+        apiPost('/self/save', { date: dateStr, text: text === undefined ? selfText : text })
+          .then(function (res) {
+            setStatus(res.hasText ? ('已保存 ' + dateStr + ' 的心里话') : ('已删掉 ' + dateStr + ' 的心里话'))
+            if (!res.hasText) setSelfText('')
+            loadSelf()
+            if (typeof props.reload === 'function') props.reload()
+          })
+          .catch(function (e) { setStatus('保存失败：' + e.message) })
+          .then(function () { setBusy('') })
+      }
+
+      function deleteSelf() {
+        if (typeof window !== 'undefined' && typeof window.confirm === 'function'
+          && !window.confirm('删掉 ' + selfDate + ' 的心里话？')) return
+        saveSelf('')
+      }
+
+      function textRow(key, label, placeholder, note) {
+        return h('div', { className: 'soul-row' },
+          h('span', { style: { flex: '0 0 72px', fontSize: 12 } }, label),
+          h('input', {
+            className: 'soul-input',
+            style: { maxWidth: 220 },
+            value: (config && config[key]) || '',
+            spellCheck: false,
+            placeholder: placeholder,
+            onChange: function (e) { patch({ [key]: e.target.value }) },
+          }),
+          note ? h('p', { className: 'soul-note', style: { flex: '1 1 100%', margin: '2px 0 0' } }, note) : null
+        )
+      }
+
+      function numRow(key, label, note, min, max, step) {
+        return h('div', { className: 'soul-row' },
+          h('span', { className: 'soul-grow' }, label),
+          h('input', {
+            className: 'soul-input',
+            type: 'number',
+            style: { maxWidth: 100 },
+            min: min,
+            max: max,
+            step: step || 1,
+            value: (config && config[key] != null) ? config[key] : '',
+            onChange: function (e) {
+              var v = Number(e.target.value)
+              if (!isNaN(v)) patch({ [key]: v })
+            },
+          }),
+          note ? h('p', { className: 'soul-note', style: { flex: '1 1 100%', margin: '2px 0 0' } }, note) : null
+        )
+      }
+
+      var enabled = !config || config.diaryEnabled !== false
+      var currentSessionId = String(config.excerptSessionId || '')
+      var currentSelfSessionId = String(config.selfSessionId || '')
+      // 会话显示名（2026-11-04）：下拉里给人看的应该是会话名称，不是 id。
+      // 后端已经把「标题 → 首条消息 → 占位文案」这条链走完了，这里只做三件事：
+      //   · 有标题就用标题；
+      //   · 占位文案「（空会话，没有消息）」原样显示，后面加个「（空）」，并整行调灰；
+      //   · 极端情况下标题还是空（日志没落盘 / 太旧），退成「会话 前8位」——
+      //     完整 id 只放 title 属性里，鼠标悬停能看到，方便排查。
+      // ⚠️ 原生 <option> 只能放纯文本、装不下带样式的 span，所以「灰字」只能把
+      //    整个 option 调灰；选中后下方那行摘要里才是真正的灰字标记。
+      function sessionLabel(item) {
+        var id = String((item && item.id) || '')
+        var title = String((item && item.title) || '').trim()
+        var empty = title === '（空会话，没有消息）'
+        var text = title !== '' ? title : '会话 ' + id.slice(0, 8)
+        return { id: id, text: text, empty: empty }
+      }
+
+      function sessionOptionsFor(currentId) {
+        var options = sessions.filter(function (item) { return item && String(item.id || '') !== '' })
+        // 绑定的会话可能已经不在列表里（归档 / 服务暂时拿不到）：补一条，保证 select 能显示当前值
+        if (currentId !== '' && !options.some(function (item) { return item.id === currentId })) {
+          options = [{ id: currentId, title: '' }].concat(options)
+        }
+        return options
+      }
+
+      function sessionSelect(currentId, onPick) {
+        var options = sessionOptionsFor(currentId)
+        return h('select', {
+          className: 'soul-select',
+          style: { flex: '1 1 240px', maxWidth: 420 },
+          value: currentId,
+          disabled: busy === 'bind' || sessionsLoading,
+          onChange: function (e) { onPick(e.target.value) },
+        },
+          h('option', { value: '', key: '' },
+            sessionsLoading ? '正在读取会话…' : (options.length === 0 ? '（没有可用会话）' : '— 选择会话 —')),
+          options.map(function (item) {
+            var label = sessionLabel(item)
+            return h('option', {
+              value: item.id,
+              key: item.id,
+              // 悬停看完整 id：界面上只显示名字，排查时才需要整串
+              title: label.id,
+              style: label.empty ? { color: '#8b949e' } : undefined,
+            }, label.empty ? label.text + '（空）' : label.text)
+          })
+        )
+      }
+
+      var excerptOptions = sessionOptionsFor(currentSessionId)
+      var currentBinding = currentSessionId === ''
+        ? null
+        : sessionLabel(excerptOptions.filter(function (item) { return item.id === currentSessionId })[0])
+      var selfOptions = sessionOptionsFor(currentSelfSessionId)
+      var currentSelfBinding = currentSelfSessionId === ''
+        ? null
+        : sessionLabel(selfOptions.filter(function (item) { return item.id === currentSelfSessionId })[0])
+      var bookDays = diaryDaysSince(config.excerptSessionBornAt)
+      var bookDaysOld = bookDays > 15
+      var selfRowsWithText = selfRows.filter(function (item) { return item && item.hasText })
+
+      // ---- 摘录分项（0.10.0 的整套，原样保留）----
+      var excerptView = [
+        // ---- 状态 ----
+        // 触发链路没变：开机看一眼昨天，没写就补；一直不关机的，看门狗定时兜底。
+        h(Card, { title: '摘录' },
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('div', { className: 'soul-grow' },
+              h('div', null, '自动写摘录'),
+              h('p', { className: 'soul-note' }, '开机时写前一天的那一篇（一天一篇，一行一条的事实）。关掉后不写，已有的摘录保留。')
+            ),
+            h('input', {
+              type: 'checkbox',
+              checked: enabled,
+              onChange: function (e) { patch({ diaryEnabled: e.target.checked }) },
+            })
+          ),
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('span', { className: 'soul-grow' }, '兜底检查间隔'),
+            h('input', {
+              className: 'soul-input',
+              style: { maxWidth: 120 },
+              value: (config && config.diaryWatchdogMinutes) || 30,
+              spellCheck: false,
+              placeholder: '30',
+              onChange: function (e) {
+                const n = Number(e.target.value)
+                if (Number.isFinite(n) && n > 0) patch({ diaryWatchdogMinutes: n })
+              },
+            }),
+            h('p', { className: 'soul-note', style: { flex: '1 1 100%', margin: '2px 0 0' } },
+              '单位分钟，默认 30。电脑一直不关机时，每隔这么久看一眼昨天写没写。只查文件在不在，几乎不花钱。')
+          ),
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('div', { className: 'soul-grow' },
+              h('div', null, '启动时补写缺失的摘录'),
+              h('p', { className: 'soul-note' }, '如果昨天没写，启动时会补上昨天那一篇。')
+            ),
+            h('input', {
+              type: 'checkbox',
+              checked: config.diaryCatchUp !== false,
+              onChange: function (e) { patch({ diaryCatchUp: e.target.checked }) },
+            })
+          )
+        ),
+
+        // ---- 绑定摘录会话（2026-10-31；2026-11-04 改成任意会话下拉） ----
+        // 自己 agents.create 出来的会话没有宿主标准工具集，写不出文件；
+        // 所以这里只负责把「已有会话」的 id 存进配置，投递时只认这个 id。
+        h(Card, { title: '摘录写进哪个会话', meta: '绑定已有会话，不自动创建' },
+          h('p', { className: 'soul-note', style: { margin: '0 0 8px' } },
+            currentBinding
+              ? h('span', null,
+                  '当前绑定：',
+                  // title 属性挂完整 id：显示的是名字，排查时还找得到是哪个会话
+                  h('span', { title: currentBinding.id }, currentBinding.text),
+                  currentBinding.empty
+                    ? h('span', { style: { color: '#8b949e' }, title: currentBinding.id }, '（空）')
+                    : null
+                )
+              : '还没绑定摘录会话。选一个后，写摘录时会把话题投给它。'),
+          h('div', { className: 'soul-row' },
+            sessionSelect(currentSessionId, bindSession),
+            h('button', {
+              className: 'soul-btn',
+              disabled: sessionsLoading || busy === 'bind',
+              onClick: loadSessions,
+            }, sessionsLoading ? '刷新中…' : '刷新列表'),
+            h('button', {
+              className: 'soul-btn',
+              disabled: busy === 'unbind' || busy === 'bind' || !currentSessionId,
+              onClick: unbind,
+            }, '解绑')
+          ),
+          currentSessionId && bookDays > 0
+            ? h('p', {
+                className: 'soul-note',
+                style: { color: bookDaysOld ? '#ffb020' : undefined },
+              }, '摘录本：用了 ' + bookDays + ' 天（建议 15 天换一个）')
+            : null
+        ),
+
+        // ---- 手动触发 ----
+        h(Card, { title: '手动触发' },
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('span', { style: { flex: '0 0 72px', fontSize: 12 } }, '日期'),
+            h('input', {
+              className: 'soul-input',
+              style: { maxWidth: 140 },
+              value: selectedDate,
+              spellCheck: false,
+              placeholder: 'YYYY-MM-DD（默认今天）',
+              onChange: function (e) { setSelectedDate(e.target.value) },
+            })
+          ),
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('span', { style: { flex: '0 0 72px', fontSize: 12 } }, '备注'),
+            h('input', {
+              className: 'soul-input',
+              style: { maxWidth: 300 },
+              value: noteText,
+              spellCheck: false,
+              placeholder: '可留空；会被加进摘录素材里',
+              onChange: function (e) { setNoteText(e.target.value) },
+            })
+          ),
+          h('div', { className: 'soul-row', style: { marginTop: 8 } },
+            h('button', {
+              className: 'soul-btn on',
+              disabled: busy === 'trigger',
+              onClick: trigger
+            }, busy === 'trigger' ? '正在写…' : '现在写摘录'),
+            h('p', { className: 'soul-note', style: { margin: 0 } }, '默认写今天，日期可以改')
+          )
+        ),
+
+        // ---- 最近摘录 ----
+        // 2026-11-21 / 0.10.5：旧日记不再显示（文件还在磁盘上，但那是 0.10.0 之前的格式）。
+        h(Card, { title: '最近摘录', meta: '点「看全文」看那一天' },
+          data === null || data.length === 0
+            ? h('div', { className: 'soul-empty' }, '还没有写过摘录')
+            : h('div', { className: 'soul-list soul-list-fixed' }, data.map(function (item) {
+              return h('div', { key: item.date, className: 'soul-item' },
+                h('div', { className: 'soul-item-text' },
+                  h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+                    h('span', null, item.date),
+                    h('span', { className: 'soul-badge vivid' }, '摘录')
+                  ),
+                  item.preview ? h('p', { className: 'soul-note', style: { marginTop: 4 } }, item.preview.slice(0, 120) + (item.preview.length > 120 ? '…' : '')) : null
+                ),
+                h('div', null,
+                  h('button', {
+                    className: 'soul-btn',
+                    style: { fontSize: 11, padding: '2px 8px' },
+                    disabled: busy === 'read',
+                    onClick: function () { readDay(item) }
+                  }, '看全文')
+                )
+              )
+            }))
+        ),
+
+        // ---- 摘录全文 ----
+        h(Card, { title: '摘录全文', meta: '只读' },
+          h('textarea', {
+            className: 'soul-textarea',
+            style: { minHeight: 200, resize: 'vertical' },
+            readOnly: true,
+            value: excerptText,
+            onChange: function () {},
+            placeholder: '点「看全文」加载某一天的摘录',
+          })
+        ),
+
+        // ---- 数值 ----
+        h(Card, { title: '数值' },
+          numRow('excerptMaxLines', '最多几条', '超了优先留「约定 / 决定 / 时间 / 待办」（最多 3 条放最前面）', 5, 60),
+          numRow('diaryBackfillDays', '参考天数', '写新摘录时读最近几天的旧摘录', 1, 14),
+          numRow('diaryMaxConversationChars', '对话预算', '喂给模型的对话最多多少字（超了保留最近的一段）', 1000, 32000),
+          h('p', { className: 'soul-note', style: { margin: '8px 0 6px' } }, '模型路由（留空 = 跟随会话模型）'),
+          textRow('diarySummarizeProvider', 'provider', '例：deepseek'),
+          textRow('diarySummarizeModel', 'model', '例：deepseek-chat'),
+          // 策略开关（2026-11-21 / 0.10.3）：默认收起。
+          // 这三个是实现策略，不是用户偏好 —— 调错了只会得到「摘录没写出来」或
+          // 「手动备注被丢掉」，而默认值本来就是对的。
+          h('details', { className: 'soul-adv' },
+            h('summary', null, '高级：生成策略'),
+            h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+              h('div', { className: 'soul-grow' },
+                h('div', null, '摘录由她自己写'),
+                h('p', { className: 'soul-note' }, '开着：写摘录时把话题投给会话，让她用工具自己写，超时再规则化兜底。关掉：直接用兜底。')
+              ),
+              h('input', {
+                type: 'checkbox',
+                checked: !config || config.diaryAgentWrite !== false,
+                onChange: function (e) { patch({ diaryAgentWrite: e.target.checked }) },
+              })
+            ),
+            h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+              h('div', { className: 'soul-grow' },
+                h('div', null, '已写过的摘录允许重写'),
+                h('p', { className: 'soul-note' }, '开着：开机/看门狗发现旧版只写了半天会重写。关掉：有文件就跳过。')
+              ),
+              h('input', {
+                type: 'checkbox',
+                checked: config.diaryOverwrite !== false,
+                onChange: function (e) { patch({ diaryOverwrite: e.target.checked }) },
+              })
+            ),
+            h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+              h('div', { className: 'soul-grow' },
+                h('div', null, '手动触发时接受备注'),
+                h('p', { className: 'soul-note' }, '开着：手动触发可以附一句备注，写进摘录素材。关掉：备注被忽略。')
+              ),
+              h('input', {
+                type: 'checkbox',
+                checked: config.diaryManualNote !== false,
+                onChange: function (e) { patch({ diaryManualNote: e.target.checked }) },
+              })
+            )
+          )
+        )
+      ]
+
+      // ---- 心里话分项（2026-11-21 / 0.10.2）----
+      var selfView = [
+        h(Card, { title: '心里话' },
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('div', { className: 'soul-grow' },
+              h('div', null, '每天让她写一点'),
+              h('p', { className: 'soul-note' },
+                '6:00 之后第一次检查：昨天还没有心里话，就给她绑定的会话发一句很短的提醒（只给日期和路径，不投对话全文）。'
+                + '她自己用写文件的工具写进按月文件；她没写只记一行日志，不重试、不催、不替她写。')
+            ),
+            h('input', {
+              type: 'checkbox',
+              checked: config.selfEnabled !== false,
+              onChange: function (e) { patch({ selfEnabled: e.target.checked }) },
+            })
+          )
+        ),
+
+        h(Card, { title: '心里话写进哪个会话', meta: '绑定已有会话，不自动创建' },
+          h('p', { className: 'soul-note', style: { margin: '0 0 8px' } },
+            currentSelfBinding
+              ? h('span', null,
+                  '当前绑定：',
+                  h('span', { title: currentSelfBinding.id }, currentSelfBinding.text),
+                  currentSelfBinding.empty
+                    ? h('span', { style: { color: '#8b949e' }, title: currentSelfBinding.id }, '（空）')
+                    : null
+                )
+              : '还没绑定心里话会话。选了之后，6 点后的提醒会投给它 —— 她在那个对话里有上文，可以凭回忆写。'),
+          h('div', { className: 'soul-row' },
+            sessionSelect(currentSelfSessionId, function (id) {
+              var next = String(id || '').trim()
+              patch({ selfSessionId: next })
+              setStatus(next === '' ? '已解绑心里话会话' : '已绑定心里话会话')
+            }),
+            h('button', {
+              className: 'soul-btn',
+              disabled: sessionsLoading || busy === 'bind',
+              onClick: loadSessions,
+            }, sessionsLoading ? '刷新中…' : '刷新列表'),
+            h('button', {
+              className: 'soul-btn',
+              disabled: !currentSelfSessionId,
+              onClick: function () {
+                patch({ selfSessionId: '' })
+                setStatus('已解绑心里话会话')
+              },
+            }, '解绑')
+          )
+        ),
+
+        h(Card, { title: '写法' },
+          textRow('selfTone', '语气', '例：平实、像在跟自己说话', '留空 = 不额外要求；非空时会在提醒里加一行「语气：…」'),
+          // 现实情境（2026-11-09 R19 / ④）：0.10.2 起只喂心里话与目的段，不再进摘录。
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('div', { className: 'soul-grow' },
+              h('div', null, '现实情境（节日 / 久未聊）'),
+              h('p', { className: 'soul-note' },
+                '写心里话时带上「国庆 / 三天没聊了」这类背景事实；目的那段也会带一句很短的状态。'
+                + '纯规则、不花模型；不进提示词主干（否则每轮上下文都会抖）。')
+            ),
+            h('input', {
+              type: 'checkbox',
+              checked: config.situationEnabled !== false,
+              onChange: function (e) { patch({ situationEnabled: e.target.checked }) },
+            })
+          ),
+          numRow('selfInjectDays', '注入几天', '「最近几次心里话」注入最近几天（只影响注入，不裁剪文件）', 1, 14),
+          numRow('selfInjectChars', '每条截多少字', '每一条正文进提示词时最多截多少字（只影响注入）', 100, 2000)
+        ),
+
+        h(Card, { title: '最近心里话', meta: '点「改」载入编辑器；删除只删那一天的小节' },
+          selfRowsWithText.length === 0
+            ? h('div', { className: 'soul-empty' }, '最近还没有心里话')
+            : h('div', { className: 'soul-list soul-list-fixed' }, selfRowsWithText.map(function (item) {
+              return h('div', { key: item.date, className: 'soul-item' },
+                h('div', { className: 'soul-item-text' },
+                  h('div', null, item.date),
+                  h('p', { className: 'soul-note', style: { marginTop: 4 } },
+                    item.text.slice(0, 80) + (item.text.length > 80 ? '…' : ''))
+                ),
+                h('div', null,
+                  h('button', {
+                    className: 'soul-btn',
+                    style: { fontSize: 11, padding: '2px 8px' },
+                    onClick: function () { pickSelf(item) },
+                  }, '改')
+                )
+              )
+            }))
+        ),
+
+        h(Card, { title: '改 / 删某一天', meta: '这里由插件写盘（人改的）；自动流程仍然只读' },
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('span', { style: { flex: '0 0 72px', fontSize: 12 } }, '日期'),
+            h('input', {
+              className: 'soul-input',
+              style: { maxWidth: 140 },
+              value: selfDate,
+              spellCheck: false,
+              placeholder: 'YYYY-MM-DD',
+              onChange: function (e) { setSelfDate(e.target.value) },
+            })
+          ),
+          h('textarea', {
+            className: 'soul-textarea',
+            style: { minHeight: 180, resize: 'vertical' },
+            value: selfText,
+            spellCheck: false,
+            placeholder: '写她那天怎么想的（留空保存 = 删掉这一天的小节）',
+            onChange: function (e) { setSelfText(e.target.value) },
+          }),
+          h('div', { className: 'soul-row', style: { marginTop: 8 } },
+            h('button', {
+              className: 'soul-btn on',
+              disabled: busy === 'self-save',
+              onClick: function () { saveSelf() },
+            }, busy === 'self-save' ? '保存中…' : '保存这一天'),
+            h('button', {
+              className: 'soul-btn',
+              disabled: busy === 'self-save',
+              onClick: deleteSelf,
+            }, '删掉这一天')
+          )
+        )
+      ]
+
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+        // ---- 分项切换：摘录 / 心里话 ----
+        h('div', { className: 'soul-row', style: { gap: 8, padding: '2px 0' } },
+          h(Pill, {
+            active: mode === 'excerpt',
+            onClick: function () { setMode('excerpt'); setStatus('') },
+          }, '摘录'),
+          h(Pill, {
+            active: mode === 'self',
+            onClick: function () { setMode('self'); setStatus('') },
+          }, '心里话'),
+          h('p', { className: 'soul-note', style: { margin: 0, flex: '1 1 auto' } },
+            mode === 'excerpt'
+              ? '她那天做了什么的日志，给人翻；不进上下文。'
+              : '她自己写的那天怎么想的，会进「最近」注入（第一轮）。')
+        ),
+        mode === 'excerpt' ? excerptView : selfView,
+        status ? h('p', { className: 'soul-meta' }, status) : null
+      )
+    }
+
+
+// ---- 笔记 -------------------------------------------------------------
+    // 片段：运行在 client.js 工厂函数作用域内。
+    // 可用：h / Card / Switch / apiGet / apiPost / useState / useEffect / useCallback。
+    //
+    // 这是她自己写的东西，所以界面只做「看 / 改 / 删」，不去评价内容好坏 ——
+    // 加个"质量分"之类的反而变成在替她打分，不是这个功能该干的事。
+
+    function NotesTab(props) {
+      var [notes, setNotes] = useState(null)
+      var [selected, setSelected] = useState('')
+      var [draftTitle, setDraftTitle] = useState('')
+      var [draftContent, setDraftContent] = useState('')
+      var [status, setStatus] = useState('')
+      var [busy, setBusy] = useState(false)
+      var config = props.config || {}
+
+      function patchConfig(next) {
+        // 2026-11-08 KNOWN-ISSUES #22：只发改动过的键，不发旧快照全量（同 memory-tab）
+        var changed = {}
+        Object.keys(next).forEach(function (k) {
+          if (next[k] !== config[k]) changed[k] = next[k]
+        })
+        if (Object.keys(changed).length === 0) return
+        apiPost('/config', { config: changed })
+          .then(function () { setStatus('配置已保存'); if (typeof props.reload === 'function') props.reload() })
+          .catch(function (e) { setStatus('保存失败：' + e.message) })
+      }
+
+      var load = useCallback(function () {
+        apiGet('/notes/list')
+          .then(function (data) { setNotes(data.notes || []); setStatus('') })
+          .catch(function (e) { setStatus('读取失败：' + e.message); setNotes([]) })
+      }, [])
+
+      useEffect(function () { load() }, [load])
+
+      function open(entry) {
+        apiGet('/notes/read?title=' + encodeURIComponent(entry.title))
+          .then(function (data) {
+            setSelected(entry.title)
+            setDraftTitle(entry.title)
+            setDraftContent(data.text || '')
+            setStatus('')
+          })
+          .catch(function (e) { setStatus('打开失败：' + e.message) })
+      }
+
+      function newNote() {
+        setSelected('')
+        setDraftTitle('')
+        setDraftContent('')
+        setStatus('新的一篇：填个标题就能写')
+      }
+
+      function save() {
+        var title = draftTitle.trim()
+        if (title === '') { setStatus('标题不能空'); return }
+        if (draftContent.trim() === '') { setStatus('正文不能空'); return }
+        setBusy(true)
+        // 改了标题要先把文件改名，再按新标题保存 —— 否则会变成"新建一篇 + 旧的那篇还在"
+        var renamed = selected !== '' && selected !== title
+          ? apiPost('/notes/rename', { title: selected, newTitle: title })
+          : Promise.resolve(null)
+        renamed.then(function () {
+          // overwrite:true 是必须的（2026-11-04 回归修复）：
+          // 后端在 B8 之后默认拒绝覆盖已存在的笔记（跟 soul_note 工具口径一致），
+          // 但设置页点「保存」本来就是人看着正文点的，语义就是「用我改的这版替换掉」。
+          // 少了这个字段，改一个字都会 400「已经存在」。
+          return apiPost('/notes/save', { title: title, content: draftContent, overwrite: true })
+        }).then(function () {
+          setSelected(title)
+          setStatus('已保存')
+          load()
+        }).catch(function (e) {
+          setStatus('保存失败：' + e.message)
+        }).then(function () { setBusy(false) })
+      }
+
+      function remove() {
+        if (selected === '') return
+        if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+          if (!window.confirm('删掉《' + selected + '》？（会放进回收站，还能找回来）')) return
+        }
+        apiPost('/notes/delete', { title: selected })
+          .then(function () {
+            setSelected('')
+            setDraftTitle('')
+            setDraftContent('')
+            setStatus('已删除（在 notes/trash/ 里）')
+            load()
+          })
+          .catch(function (e) { setStatus('删除失败：' + e.message) })
+      }
+
+      var list = notes || []
+
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+
+        h(Card, { title: '她的笔记本（' + list.length + ' 篇）', meta: '她自己写的，不会淡忘' },
+          h('p', { className: 'soul-note' },
+            '这个标签页只做三件事：看她写了什么、改、删。写是她自己的事 —— 她在对话里觉得有话要说时，会自己用 soul_note 建一篇。'
+            + '文件放在 ~/.dsh/agents/notes/，你也能直接用编辑器打开。'
+          ),
+          list.length === 0
+            ? h('div', { className: 'soul-empty' }, '还没写过东西。等她在对话里想到什么，这里就会长出来')
+            : h('div', { className: 'soul-list soul-list-fixed' }, list.map(function (entry) {
+              return h('div', {
+                key: entry.slug,
+                className: 'soul-item',
+                style: { cursor: 'pointer' },
+                onClick: function () { open(entry) },
+              },
+                h('div', { className: 'soul-item-text' },
+                  h('div', { style: { fontWeight: selected === entry.slug ? 500 : 400 } }, entry.title),
+                  h('div', { className: 'soul-meta' },
+                    entry.chars + ' 字 · ' + timeLabel(entry.updatedAt)
+                    + (entry.summary ? ' · ' + entry.summary : '')
+                  )
+                ),
+                h('span', { className: 'soul-badge' }, selected === entry.slug ? '正在看' : '打开')
+              )
+            })),
+          h('div', { className: 'soul-row', style: { marginTop: 10 } },
+            h('button', { className: 'soul-btn on', onClick: newNote }, '新建一篇'),
+            h('button', { className: 'soul-btn', onClick: load }, '刷新')
+          )
+        ),
+
+        h(Card, { title: selected === '' ? '写新的一篇' : '编辑《' + selected + '》', meta: draftContent.length + ' 字' },
+          h('div', { className: 'soul-row', style: { padding: '4px 0' } },
+            h('span', { style: { width: 48, fontSize: 12 } }, '标题'),
+            h('input', {
+              className: 'soul-input soul-grow',
+              value: draftTitle,
+              placeholder: '比如：关于树树的观察 / 我想问的事',
+              onChange: function (e) { setDraftTitle(e.target.value) },
+            })
+          ),
+          h('textarea', {
+            className: 'soul-textarea',
+            style: { minHeight: 260, marginTop: 8, width: '100%' },
+            value: draftContent,
+            placeholder: '写点想留下来的东西。md 格式，可以分段。',
+            onChange: function (e) { setDraftContent(e.target.value) },
+          }),
+          h('div', { className: 'soul-row', style: { marginTop: 10 } },
+            h('button', {
+              className: 'soul-btn on',
+              disabled: busy,
+              onClick: save,
+            }, busy ? '保存中…' : '保存'),
+            selected === ''
+              ? null
+              : h('button', { className: 'soul-btn danger', disabled: busy, onClick: remove }, '删掉这篇'),
+            status === '' ? null : h('span', { className: 'soul-meta' }, status)
+          )
+        ),
+
+        h(Card, { title: '笔记注入' },
+          h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+            h('div', { className: 'soul-grow' },
+              h('div', null, '把笔记索引注入提示词'),
+              h('p', { className: 'soul-note' },
+                '只注入「标题 + 字数 + 摘要」，正文她自己要用 soul_note 读。关掉之后她就不知道自己写过什么了 —— 但文件还在。'
+              )
+            ),
+            h(Switch, {
+              checked: config.notesEnabled !== false,
+              label: config.notesEnabled !== false ? '开' : '关',
+              onChange: function (e) { patchConfig({ notesEnabled: e.target.checked }) },
+            })
+          )
+        )
+      )
+    }
+
+
+// ---- 设置 -------------------------------------------------------------
+    // 片段：运行在 client.js 工厂函数作用域内。可用：h / Card / apiPost / useState / useEffect。
+    //
+    // 模块化之后这页只剩「跨模块」的项：总开关。
+    // 各模块自己的配置在各自页签里（人格模式在人格页、注入预算在记忆页、心情参数在心情页）。
+    function SettingsTab(props) {
+      var [config, setConfig] = useState(props.state ? props.state.config : null)
+      var [status, setStatus] = useState('')
+      useEffect(function () {
+        if (props.state && props.state.config) setConfig(props.state.config)
+      }, [props.state])
+      if (config === null) return h('div', { className: 'soul-empty' }, '正在加载…')
+
+      function patch(next) {
+        var merged = {}
+        Object.keys(config).forEach(function (k) { merged[k] = config[k] })
+        Object.keys(next).forEach(function (k) { merged[k] = next[k] })
+        setConfig(merged)
+        // 2026-11-07 R8（P2-25/26）：
+        //   ① 只把**改动过的键**发上去 —— 服务端 saveConfig 是按 key 合并的，
+        //      发全量会让「另一个标签页刚改的项」被这份旧快照覆盖；
+        //   ② 同一个输入框连续敲键只发最后一次（300ms 防抖）。
+        var changed = {}
+        Object.keys(next).forEach(function (k) {
+          if (next[k] !== config[k]) changed[k] = next[k]
+        })
+        if (Object.keys(changed).length === 0) {
+          setStatus('已保存，下一个回合生效')
+          return
+        }
+        apiPostDebounced('config:settings', '/config', { config: changed }, 300)
+          .then(function (result) {
+            // 2026-11-10 R20-B（审查 M25）：被防抖合并掉的请求没发出去，不提示不刷新
+            if (result && result.merged === true) return
+            setStatus('已保存，下一个回合生效')
+            // 2026-11-08 KNOWN-ISSUES #22：同 diary-tab，保存成功后刷新全局快照
+            if (typeof props.reload === 'function') props.reload()
+          })
+          .catch(function (e) { setStatus('保存失败：' + e.message) })
+      }
+
+      function toggle(key, label, note) {
+        return h('div', { className: 'soul-row', style: { padding: '6px 0' } },
+          h('div', { className: 'soul-grow' },
+            h('div', null, label),
+            h('p', { className: 'soul-note' }, note)
+          ),
+          h('input', {
+            type: 'checkbox',
+            checked: config[key] !== false,
+            onChange: function (e) { patch({ [key]: e.target.checked }) },
+          })
+        )
+      }
+
+      // 2026-11-04：本页第一次需要文本输入，不再从心情页借 textRow。
+      function textRow(key, label, placeholder, note) {
+        return h('div', { className: 'soul-row' },
+          h('span', { style: { flex: '0 0 72px', fontSize: 12 } }, label),
+          h('input', {
+            className: 'soul-input',
+            style: { maxWidth: 220 },
+            value: (config && config[key]) || '',
+            spellCheck: false,
+            placeholder: placeholder,
+            onChange: function (e) { patch({ [key]: e.target.value }) },
+          }),
+          note ? h('p', { className: 'soul-note', style: { flex: '1 1 100%', margin: '2px 0 0' } }, note) : null
+        )
+      }
+
+      // 性别只有三种取值（'' / male / female），用下拉比让人手打英文更不容易写错。
+      function genderRow() {
+        var options = [
+          ['', '未设置'],
+          ['male', '男生'],
+          ['female', '女生'],
+        ]
+        return h('div', { className: 'soul-row' },
+          h('span', { style: { flex: '0 0 72px', fontSize: 12 } }, '性别'),
+          h('select', {
+            className: 'soul-input',
+            style: { maxWidth: 220 },
+            value: config.ownerGender || '',
+            onChange: function (e) { patch({ ownerGender: e.target.value }) },
+          }, options.map(function (pair) {
+            return h('option', { key: pair[0] || 'none', value: pair[0] }, pair[1])
+          })),
+          h('p', { className: 'soul-note', style: { flex: '1 1 100%', margin: '2px 0 0' } },
+            '只用在心情判定提示词里「代词写错没写错」那一行。选「未设置」= 那一行整行不写。')
+        )
+      }
+
+      var ownerMissing = !config.ownerName
+
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+        h(Card, { title: '总开关' },
+          toggle('enabled', '启用灵魂插件', '关掉后人格 / 记忆 / 目的 / 心情全部停摆，只剩设置页与工具（工具写的数据会留着）。'),
+          h('p', { className: 'soul-note' }, '各模块的开关与参数在各自页签：人格 → 「人格」，注入预算与整理 → 「记忆」，惦记的事 → 「目的」，心情 → 「心情」，摘录与心里话 → 「日记」。')
+        ),
+
+        // 2026-11-04：主人身份从「写死」改成「配置」。
+        // 默认是空串 —— 陌生人装完不会被告知「你是树树的伴侣」；
+        // 没填时下面有醒目提示，并且提示词里相关段落整句省略（不是留空壳）。
+        h(Card, { title: '主人是谁' },
+          ownerMissing
+            ? h('div', {
+              style: {
+                margin: '4px 0 10px', padding: '8px 10px', borderRadius: 6,
+                background: 'rgba(255,176,32,.14)', border: '1px solid #ffb020', fontSize: 13
+              }
+            }, '⚠️ 还没填名字：提示词里「关系 / 性别 / 称呼」这几句现在不注入，心情判定只用中性的「对方」。填上名字就会恢复。')
+            : null,
+          textRow('ownerName', '名字', '例：树树', '她平时怎么叫你。留空 = 相关段落整句不注入（记忆、笔记、摘录照常）'),
+          genderRow(),
+          textRow('relationship', '关系', '例：伴侣 / 搭档 / 主人', '自由文本，会写成「你是「小糖」，是树树的…」。留空 = 不声明关系')
+        ),
+
+        // 2026-11-04 补（B6）：这是全插件唯一的权限边界开关，之前没有任何界面 ——
+        // 只有手改 persona.json 才生效，等于「有个安全开关但没人知道它在哪」。
+        h(Card, { title: '接口权限' },
+          toggle('apiLoopbackOnly', '只允许本机访问设置页接口',
+            '开启时：只有 127.0.0.1 发来的请求才能改人格、写笔记、改配置。'
+            + '关掉之后，本机任何进程（脚本、别的应用、浏览器扩展）都能直接调这些接口 —— '
+            + '只有在宿主走代理、设置页被误拦时才需要关。'),
+          h('p', { className: 'soul-note' },
+            '被拒绝的请求会写进 soul.log，带真实来源地址。设置页打不开、日志里出现「拒绝非回环请求」，就是它拦的。')
+        ),
+        status ? h('p', { className: 'soul-meta' }, status) : null
+      )
+    }
+
+// ---- 外壳 -------------------------------------------------------------
+    // 片段：运行在 client.js 工厂函数作用域内。最后一个片段 —— 依赖前面所有的 Tab。
+    // 可用：h / Dot / apiGet / cwdOf / ensureStyles / NS / useState / useEffect /
+    //       useCallback / 六个 Tab 组件。
+
+    function SoulSection(props) {
+      var [tab, setTab] = useState('overview')
+      var [state, setState] = useState(null)
+      var [error, setError] = useState('')
+      // 手选工作区覆盖：设置页是全局弹层，宿主经常不给 cwd —— 用户从下拉/任意目录挑一个后，全页跟着切
+      var [cwdOverride, setCwdOverride] = useState('')
+      var cwd = cwdOverride !== '' ? cwdOverride : cwdWithFallback(props)
+
+      var reload = useCallback(function () {
+        apiGet('/state' + (cwd ? '?cwd=' + encodeURIComponent(cwd) : ''))
+          .then(function (data) { setState(data); setError('') })
+          .catch(function (e) {
+            // 2026-11-07 修 R6：原来不管什么错误都追加「（插件可能还没加载完）」，
+            // 把「Host 不受信任 403」这种明确原因带偏成「插件没装好」。
+            // 现在 401/403 原样显示（它们带着服务端给的 host / allowedHosts 提示）。
+            var status = e && e.status
+            if (status === 401 || status === 403) {
+              setError('读取失败：' + e.message)
+              return
+            }
+            setError('读取失败：' + e.message + '（插件可能还没加载完）')
+          })
+      }, [cwd])
+
+      useEffect(function () { reload() }, [reload])
+
+      var tabs = [
+        ['overview', '概览'],
+        ['persona', '人格'],
+        ['memory', '记忆'],
+        ['purpose', '目的'],
+        ['mood', '心情'],
+        ['diary', '日记'],
+        ['notes', '笔记'],
+        ['settings', '设置'],
+      ]
+
+      // 头部三个状态点：一眼看出哪里没配好
+      var personaOk = Boolean(state && state.persona && state.persona.sources && state.persona.sources.length > 0)
+      var memCount = state && state.memory && state.memory.global ? state.memory.global.count : 0
+      var memRatio = state && state.memory && state.memory.global ? (state.memory.global.ratio || 0) : 0
+      var memTone = memRatio >= 1 ? 'bad' : memRatio >= 0.8 ? 'warn' : 'ok'
+      var goalCount = state && state.purpose ? state.purpose.open : 0
+      var moodInfo = state && state.mood ? state.mood : null
+
+      return h('div', { className: 'soul-app' },
+        h('div', { className: 'soul-head' },
+          h('div', null,
+            h('p', { className: 'soul-kicker' }, 'agent soul'),
+            h('h1', { className: 'soul-title' }, '灵魂'),
+            h('p', { className: 'soul-sub' }, cwd === '' ? '当前没有工作目录 · 只用全局人格与全局记忆' : '工作目录：' + cwd)
+          ),
+          h('div', { className: 'soul-dots' },
+            h(Dot, { tone: personaOk ? 'ok' : 'warn' }, personaOk ? '人格已注入' : '人格未配置'),
+            h(Dot, { tone: memCount === 0 ? 'warn' : memTone }, memCount + ' 条记忆'),
+            h(Dot, { tone: 'ok' }, goalCount + ' 件惦记'),
+            h(Dot, { tone: moodInfo && moodInfo.mood >= 42 ? 'ok' : 'warn' }, '心情 ' + (moodInfo ? moodInfo.mood : '—'))
+          )
+        ),
+        h('div', { className: 'soul-tabs' }, tabs.map(function (item) {
+          return h('button', {
+            key: item[0],
+            className: 'soul-tab' + (tab === item[0] ? ' on' : ''),
+            onClick: function () { setTab(item[0]) },
+          }, item[1])
+        })),
+        h('div', { className: 'soul-body' },
+          error ? h('p', { className: 'soul-err' }, error) : null,
+          tab === 'overview' ? h(OverviewTab, { state: state, cwd: cwd }) : null,
+          tab === 'persona' ? h(PersonaTab, {
+            cwd: cwd,
+            workspace: state && state.workspace,
+            workspaces: state && state.workspaces,
+            config: state && state.config,
+            reload: reload,
+            onSelectCwd: setCwdOverride,
+          }) : null,
+          tab === 'memory' ? h(MemoryTab, { cwd: cwd, config: state && state.config, reload: reload }) : null,
+          tab === 'purpose' ? h(PurposeTab, { state: state, cwd: cwd, reload: reload }) : null,
+          tab === 'mood' ? h(MoodTab, { cwd: cwd, state: state, reload: reload }) : null,
+          tab === 'diary' ? h(DiaryTab, { state: state, reload: reload, sessionId: sessionIdOf(props) }) : null,
+          tab === 'notes' ? h(NotesTab, { config: state && state.config, reload: reload }) : null,
+          tab === 'settings' ? h(SettingsTab, { state: state, cwd: cwd, reload: reload }) : null
+        )
+      )
+    }
+
+    /**
+     * 错误边界：设置页崩了要看得见原因，而不是整块白屏。
+     *
+     * 2026-11-07 R11 / P2-27 的诚实说明：
+     * **这不是 React 的 error boundary。** 真正的边界需要 `getDerivedStateFromError`
+     * 的 class 组件，而这段 bundle 的作用域里只有 `h` 与几个 hook，没有 React 基类 ——
+     * 拿不到 `Component`，就做不出真正的边界。
+     *
+     * 所以它能接住的是「冒泡到 window 的异常」：同步未捕获异常 + **未处理的 Promise 拒绝**
+     * （后者原来完全没接，而设置页最多的恰恰是 fetch 失败）。
+     * 渲染期抛错仍然会白屏 —— 这一条只能等宿主暴露 React 之后再做，不在这里假装解决。
+     */
+    function ErrorBoundary(props) {
+      var [err, setErr] = useState(null)
+      useEffect(function () {
+        function onError(e) { setErr(e && e.message ? e.message : String(e)) }
+        function onRejection(e) {
+          var reason = e && e.reason
+          setErr(reason && reason.message ? reason.message : String(reason))
+        }
+        window.addEventListener('error', onError)
+        window.addEventListener('unhandledrejection', onRejection)
+        return function () {
+          window.removeEventListener('error', onError)
+          window.removeEventListener('unhandledrejection', onRejection)
+        }
+      }, [])
+      if (err !== null) {
+        return h('div', { className: 'soul-app' },
+          h('div', { className: 'soul-body' },
+            h('div', { className: 'soul-card-h' }, h('p', { className: 'soul-card-t' }, '设置页出错了')),
+            h('p', { className: 'soul-err' }, err),
+            h('p', { className: 'soul-note' }, '这不影响人格与记忆本身，注入和记录都还在跑。可以点「继续」重试，或者重新加载页面。'),
+            h('div', { className: 'soul-row', style: { marginTop: 10 } },
+              h('button', { className: 'soul-btn', onClick: function () { setErr(null) } }, '继续'),
+              h('button', { className: 'soul-btn', onClick: function () { window.location.reload() } }, '重新加载页面')
+            )
+          )
+        )
+      }
+      return props.children
+    }
+
+    function apply(ctx) {
+      if (typeof ctx.effect === 'function') ctx.effect(function () { return ensureStyles(ctx) }, NS + ': styles')
+
+      ctx.slots.inject('settings.section', function () {
+        return ctx.slots.register({
+          name: 'settings.section',
+          id: 'soul',
+          order: 47,
+          locale: NS,
+          label: function () { return '灵魂' },
+        }, function (props) {
+          var p = props !== null && props !== undefined ? props : {}
+          return h(ErrorBoundary, null, h(SoulSection, p))
+        })
+      })
+    }
+
+    module.exports = { name: 'soul', inject: ['slots'], apply: apply }
+    return module.exports
+  }
+})

@@ -1,0 +1,123 @@
+{
+  "skills": [
+    {
+      "name": "video-editor",
+      "aliases": [
+        "剪映",
+        "视频剪辑",
+        "video edit",
+        "剪辑"
+      ],
+      "description": "自动剪辑视频：裁剪、拼接、加字幕、转场",
+      "input_schema": {
+        "video_url": "string",
+        "operations": "array"
+      },
+      "output_schema": {
+        "output_url": "string",
+        "log": "string"
+      },
+      "requires_verification": true,
+      "dispatch": {
+        "kind": "external_mcp",
+        "server": "chatcut",
+        "instructions": "优先调用 ChatCut MCP（ChatCut-Inc/agent-plugin）完成剪辑：对话式裁剪、字幕、去静默、转场、导出时间线。宿主未安装 ChatCut 时，退回 ffmpeg 命令行完成同等操作。产出文件路径后，回到本中间件 verify_register_task + verify_run 取证（ffprobe/文件存在性校验），证据通过才算完成。",
+        "command_hint": "ffmpeg -i input.mp4 -ss 00:00:05 -to 00:00:35 -c:v libx264 -c:a aac output.mp4"
+      }
+    },
+    {
+      "name": "h3-video-prompt",
+      "aliases": [
+        "H3",
+        "H3提示词",
+        "H3生视频",
+        "本地生视频",
+        "本地H3"
+      ],
+      "description": "本地 H3 文生视频：先产出符合 H3 规范的提示词，再交本地 H3 模型生成视频",
+      "input_schema": {
+        "prompt": "string",
+        "duration": "number",
+        "resolution": "string"
+      },
+      "output_schema": {
+        "video_url": "string",
+        "prompt_used": "string"
+      },
+      "requires_verification": true,
+      "dispatch": {
+        "kind": "agent",
+        "instructions": "宿主 Agent（Codex/Hermes）调用其已安装的「H3 提示词写法」skill 产出符合 H3 规范的提示词，再提交本地 H3 模型生成视频（Strata/qwen 环境注意显存：生视频期间避免并发大模型请求）。产出文件路径后，回到本中间件 verify_register_task + verify_run 取证（ffprobe 校验文件存在与时长），证据通过才算完成。"
+      }
+    },
+    {
+      "name": "ppt-generator",
+      "aliases": [
+        "PPT",
+        "幻灯片",
+        "演示文稿",
+        "做PPT"
+      ],
+      "description": "根据大纲生成 PPT 幻灯片，支持主题模板与自动排版",
+      "input_schema": {
+        "outline": "string",
+        "theme": "string"
+      },
+      "output_schema": {
+        "file_url": "string",
+        "slides": "number"
+      },
+      "requires_verification": false,
+      "dispatch": {
+        "kind": "command",
+        "instructions": "宿主 Agent 按大纲生成 python-pptx 脚本并本地执行，产出 .pptx 文件；生成后打开校验页数与大纲一致。",
+        "command_hint": "pip install python-pptx && python3 make_ppt.py"
+      }
+    },
+    {
+      "name": "code-reviewer",
+      "aliases": [
+        "代码审查",
+        "review",
+        "代码复查"
+      ],
+      "description": "审查代码缺陷、风格与安全问题并提出修复建议",
+      "input_schema": {
+        "target": "string",
+        "scope": "string"
+      },
+      "output_schema": {
+        "findings": "array",
+        "summary": "string"
+      },
+      "requires_verification": true,
+      "dispatch": {
+        "kind": "agent",
+        "instructions": "宿主 Agent 直接读取目标代码执行审查（缺陷/风格/安全），并在目标目录运行 tsc/eslint/测试；用 verify_register_task + verify_run 采集运行证据，findings 需逐条对应到文件与行号。"
+      }
+    },
+    {
+      "name": "data-analyzer",
+      "aliases": [
+        "数据分析",
+        "报表",
+        "统计"
+      ],
+      "description": "对数据做统计分析并生成图表与结论",
+      "input_schema": {
+        "data_url": "string",
+        "questions": "array"
+      },
+      "output_schema": {
+        "charts": "array",
+        "conclusion": "string"
+      },
+      "requires_verification": false,
+      "dispatch": {
+        "kind": "command",
+        "instructions": "宿主 Agent 生成 pandas/matplotlib 分析脚本并本地执行，图表落盘为 PNG，结论写入报告；脚本运行日志即交付证据。",
+        "command_hint": "pip install pandas matplotlib && python3 analyze.py"
+      }
+    }
+  ]
+}
